@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState, use, useCallback } from 'react'
+import { Suspense, useEffect, useState, use, useCallback } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
@@ -9,8 +9,7 @@ import type { UserSummary } from '@/types/post'
 
 type Tab = 'followers' | 'following'
 
-export default function ConnectionsPage({ params }: { params: Promise<{ username: string }> }) {
-  const { username } = use(params)
+function ConnectionsContent({ username }: { username: string }) {
   const t = useT()
   const searchParams = useSearchParams()
   const initialTab: Tab = searchParams.get('tab') === 'following' ? 'following' : 'followers'
@@ -127,5 +126,14 @@ export default function ConnectionsPage({ params }: { params: Promise<{ username
         </div>
       )}
     </div>
+  )
+}
+
+export default function ConnectionsPage({ params }: { params: Promise<{ username: string }> }) {
+  const { username } = use(params)
+  return (
+    <Suspense>
+      <ConnectionsContent username={username} />
+    </Suspense>
   )
 }

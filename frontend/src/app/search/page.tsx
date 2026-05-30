@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState, useCallback } from 'react'
+import { Suspense, useEffect, useState, useCallback } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { api } from '@/lib/api'
@@ -13,7 +13,7 @@ interface SearchResults {
   jams: Jam[]
 }
 
-export default function SearchPage() {
+function SearchContent() {
   const t = useT()
   const params = useSearchParams()
   const q = params.get('q') ?? ''
@@ -149,5 +149,13 @@ export default function SearchPage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function SearchPage() {
+  return (
+    <Suspense>
+      <SearchContent />
+    </Suspense>
   )
 }
