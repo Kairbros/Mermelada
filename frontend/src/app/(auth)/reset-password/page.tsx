@@ -1,15 +1,14 @@
 'use client'
-import { useState } from 'react'
-import { useSearchParams, useRouter } from 'next/navigation'
+import { Suspense, useState, type FormEvent } from 'react'
+import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { api } from '@/lib/api'
 import { LinkIcon, CheckCircleIcon } from '@/components/Icons'
 import { useT } from '@/contexts/LanguageContext'
 
-export default function ResetPasswordPage() {
+function ResetPasswordForm() {
   const t = useT()
   const params = useSearchParams()
-  const router = useRouter()
   const token = params.get('token') ?? ''
 
   const [password, setPassword] = useState('')
@@ -47,7 +46,7 @@ export default function ResetPasswordPage() {
     )
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
     if (password.length < 8) { setError(t.auth.reset.minLength); return }
@@ -111,5 +110,13 @@ export default function ResetPasswordPage() {
         </Link>
       </p>
     </div>
+  )
+}
+
+export default function ResetPasswordPage() {
+  return (
+    <Suspense>
+      <ResetPasswordForm />
+    </Suspense>
   )
 }
