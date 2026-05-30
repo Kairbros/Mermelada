@@ -1,0 +1,7 @@
+mermelada.fun {
+    reverse_proxy frontend:3000
+}
+
+api.mermelada.fun {
+    reverse_proxy backend:4000
+}
