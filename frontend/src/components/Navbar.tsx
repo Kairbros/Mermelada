@@ -4,19 +4,19 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { useTheme } from '@/contexts/ThemeContext'
 import { useT } from '@/contexts/LanguageContext'
+import { useNotifications } from '@/contexts/NotificationsContext'
 import { useState, useEffect, useRef } from 'react'
-import { api } from '@/lib/api'
 import Avatar from '@/components/Avatar'
 import { SearchIcon, BellIcon, LogoMark, PlusIcon, SunIcon, MoonIcon } from '@/components/Icons'
 
 export default function Navbar() {
   const t = useT()
-  const { user, loading, logout, accessToken } = useAuth()
+  const { user, loading, logout } = useAuth()
   const { theme, toggle } = useTheme()
+  const { unread } = useNotifications()
   const pathname = usePathname()
   const router = useRouter()
   const [menuOpen, setMenuOpen] = useState(false)
-  const [unread, setUnread] = useState(0)
   const [query, setQuery] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -26,18 +26,6 @@ export default function Navbar() {
         ? 'text-gray-900 dark:text-white'
         : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
     }`
-
-  useEffect(() => {
-    if (!accessToken) { setUnread(0); return }
-    const fetch = () =>
-      api.get('notifications/unread-count', { headers: { Authorization: `Bearer ${accessToken}` } })
-        .json<{ count: number }>()
-        .then(r => setUnread(r.count))
-        .catch(() => {})
-    fetch()
-    const id = setInterval(fetch, 30_000)
-    return () => clearInterval(id)
-  }, [accessToken])
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
@@ -146,6 +134,15 @@ export default function Navbar() {
                   </DropItem>
                   <DropItem href="/settings" onClick={() => setMenuOpen(false)}>{t.nav.settings}</DropItem>
 
+                  {user.isAdmin && (
+                    <>
+                      <p className="label-mono px-4 pb-1 pt-3 text-gray-400 dark:text-gray-600">{t.nav.adminSection}</p>
+                      <DropItem href="/admin" onClick={() => setMenuOpen(false)}>
+                        <span className="flex items-center gap-1.5 text-rose-500 dark:text-rose-400">{t.nav.moderation}</span>
+                      </DropItem>
+                    </>
+                  )}
+
                   <div className="my-1 border-t border-gray-100 dark:border-gray-800" />
                   <button
                     onClick={async () => { setMenuOpen(false); await logout(); router.push('/') }}
@@ -177,7 +174,7 @@ export default function Navbar() {
               {t.nav.signIn}
             </Link>
             <Link href="/register" className="btn-primary">
-              <PlusIcon className="h-4 w-4" /> {t.nav.register}
+              {t.nav.register}
             </Link>
           </div>
         )}

@@ -13,13 +13,18 @@ export type JamJobData =
   | { type: 'open-voting'; jamId: string }
   | { type: 'close-jam'; jamId: string }
 
+// BullMQ rejects custom job IDs containing ":", so use "__" as the separator.
+export function jamJobId(jobType: JamJobData['type'], jamId: string) {
+  return `${jobType}__${jamId}`
+}
+
 export async function scheduleJamTransition(
   jobType: JamJobData['type'],
   jamId: string,
   runAt: Date
 ) {
   const delay = Math.max(runAt.getTime() - Date.now(), 0)
-  const jobId = `${jobType}:${jamId}`
+  const jobId = jamJobId(jobType, jamId)
   // Remove any stale job with the same id so re-publishing reschedules cleanly
   await jamQueue.remove(jobId).catch(() => {})
   await jamQueue.add(jobType, { type: jobType, jamId }, {

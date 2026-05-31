@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { createJamSchema, updateJamSchema, createTeamSchema } from './jams.schema'
 import {
   createJam, listJams, getJam, updateJam, deleteJam,
-  publishJam, cancelJam, uploadCover, getCalendar
+  publishJam, cancelJam, transitionJam, uploadCover, getCalendar
 } from './jams.service'
 import {
   joinJam, leaveJam, listParticipants,
@@ -10,11 +10,11 @@ import {
 } from './participation.service'
 import {
   createSubmission, listSubmissions, getSubmission,
-  updateSubmission, deleteSubmission, uploadGameFile, addScreenshot
+  updateSubmission, deleteSubmission, uploadGameFile, addScreenshot, deleteScreenshot
 } from './submissions.service'
 import { createSubmissionSchema, updateSubmissionSchema } from './submissions.schema'
-import { castVote, updateVote, retractVote, getMyVote, getResults } from './votes.service'
-import { castVoteSchema, updateVoteSchema } from './votes.schema'
+import { castVote, retractVote, getMyVotes, getResults } from './votes.service'
+import { castVoteSchema } from './votes.schema'
 import { ErrorSchema, UserPublicSchema, bearer } from '../../lib/swagger-schemas'
 
 const JamSchema = {
@@ -296,6 +296,23 @@ export async function jamsRoutes(app: FastifyInstance) {
     const { sub } = request.user as { sub: string }
     const { slug } = request.params as { slug: string }
     return reply.send(await cancelJam(app, slug, sub))
+  })
+
+  // POST /jams/:slug/advance — organizer manually moves the jam to its next phase
+  app.post('/:slug/advance', {
+    schema: {
+      tags: ['Jams'],
+      summary: 'Advance a jam to its next phase (organizer only): OPEN→IN_PROGRESS→VOTING→CLOSED',
+      security: bearer,
+      params: SlugParamSchema,
+      response: { 200: JamSchema, 400: ErrorSchema, 401: ErrorSchema, 403: ErrorSchema, 404: ErrorSchema }
+    },
+    preHandler: [app.authenticate]
+  }, async (request, reply) => {
+    const { sub } = request.user as { sub: string }
+    const { slug } = request.params as { slug: string }
+    const { target } = (request.body ?? {}) as { target?: string }
+    return reply.send(await transitionJam(app, slug, sub, target))
   })
 
   // POST /jams/:slug/join
@@ -595,6 +612,27 @@ export async function jamsRoutes(app: FastifyInstance) {
     return reply.code(201).send(await addScreenshot(app, slug, id, sub, file))
   })
 
+  // DELETE /jams/:slug/submissions/:id/screenshots/:screenshotId
+  app.delete('/:slug/submissions/:id/screenshots/:screenshotId', {
+    schema: {
+      tags: ['Submissions'],
+      summary: 'Delete a screenshot (owner only, jam must be IN_PROGRESS)',
+      security: bearer,
+      params: {
+        type: 'object',
+        required: ['slug', 'id', 'screenshotId'],
+        properties: { slug: { type: 'string' }, id: { type: 'string' }, screenshotId: { type: 'string' } }
+      },
+      response: { 204: { type: 'null' }, 401: ErrorSchema, 403: ErrorSchema, 404: ErrorSchema }
+    },
+    preHandler: [app.authenticate]
+  }, async (request, reply) => {
+    const { sub } = request.user as { sub: string }
+    const { slug, id, screenshotId } = request.params as { slug: string; id: string; screenshotId: string }
+    await deleteScreenshot(app, slug, id, screenshotId, sub)
+    return reply.code(204).send()
+  })
+
   // ── Voting ───────────────────────────────────────────────────────────────
 
   const VoteSchema = {
@@ -619,11 +657,28 @@ export async function jamsRoutes(app: FastifyInstance) {
     }
   }
 
-  // POST /jams/:slug/votes
+  const MyVotesSchema = {
+    type: 'object',
+    properties: {
+      items: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            submissionId: { type: 'string' },
+            score:        { type: 'number' },
+            comment:      { type: 'string', nullable: true }
+          }
+        }
+      }
+    }
+  }
+
+  // POST /jams/:slug/votes — rate a submission (creates or updates your rating for it)
   app.post('/:slug/votes', {
     schema: {
       tags: ['Voting'],
-      summary: 'Cast a vote (jam must be VOTING, must be a participant, one vote per jam)',
+      summary: 'Rate a submission 1-10 (jam must be VOTING; participants and the organizer may vote; one rating per submission)',
       security: bearer,
       params: SlugParamSchema,
       body: {
@@ -645,61 +700,41 @@ export async function jamsRoutes(app: FastifyInstance) {
     return reply.code(201).send(await castVote(app, slug, sub, input))
   })
 
-  // PATCH /jams/:slug/votes
-  app.patch('/:slug/votes', {
+  // DELETE /jams/:slug/votes/:submissionId — remove your rating for one submission
+  app.delete('/:slug/votes/:submissionId', {
     schema: {
       tags: ['Voting'],
-      summary: 'Update your vote (score and/or comment)',
+      summary: 'Retract your rating for a submission',
       security: bearer,
-      params: SlugParamSchema,
-      body: {
+      params: {
         type: 'object',
-        properties: {
-          score:   { type: 'number', minimum: 1, maximum: 10 },
-          comment: { type: 'string', maxLength: 750, nullable: true }
-        }
+        required: ['slug', 'submissionId'],
+        properties: { slug: { type: 'string' }, submissionId: { type: 'string' } }
       },
-      response: { 200: VoteSchema, 400: ErrorSchema, 401: ErrorSchema, 404: ErrorSchema }
+      response: { 204: { type: 'null' }, 401: ErrorSchema, 404: ErrorSchema }
     },
     preHandler: [app.authenticate]
   }, async (request, reply) => {
     const { sub } = request.user as { sub: string }
-    const { slug } = request.params as { slug: string }
-    const input = updateVoteSchema.parse(request.body)
-    return reply.send(await updateVote(app, slug, sub, input))
-  })
-
-  // DELETE /jams/:slug/votes
-  app.delete('/:slug/votes', {
-    schema: {
-      tags: ['Voting'],
-      summary: 'Retract your vote',
-      security: bearer,
-      params: SlugParamSchema,
-      response: { 204: { type: 'null' }, 400: ErrorSchema, 401: ErrorSchema, 404: ErrorSchema }
-    },
-    preHandler: [app.authenticate]
-  }, async (request, reply) => {
-    const { sub } = request.user as { sub: string }
-    const { slug } = request.params as { slug: string }
-    await retractVote(app, slug, sub)
+    const { slug, submissionId } = request.params as { slug: string; submissionId: string }
+    await retractVote(app, slug, sub, submissionId)
     return reply.code(204).send()
   })
 
-  // GET /jams/:slug/votes/me
+  // GET /jams/:slug/votes/me — all of your ratings for this jam
   app.get('/:slug/votes/me', {
     schema: {
       tags: ['Voting'],
-      summary: 'Get your current vote for this jam (null if not voted)',
+      summary: 'Get all your ratings for this jam',
       security: bearer,
       params: SlugParamSchema,
-      response: { 200: { ...VoteSchema, nullable: true }, 401: ErrorSchema, 404: ErrorSchema }
+      response: { 200: MyVotesSchema, 401: ErrorSchema, 404: ErrorSchema }
     },
     preHandler: [app.authenticate]
   }, async (request, reply) => {
     const { sub } = request.user as { sub: string }
     const { slug } = request.params as { slug: string }
-    return reply.send(await getMyVote(app, slug, sub))
+    return reply.send(await getMyVotes(app, slug, sub))
   })
 
   // GET /jams/:slug/results

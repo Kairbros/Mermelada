@@ -178,7 +178,7 @@ export default function ProfilePage({ params }: { params: Promise<{ username: st
 
           {(profile.websiteUrl || profile.githubUrl || profile.twitterUrl || profile.itchUrl) && (
             <div className="mt-3 flex flex-wrap gap-3 text-sm text-gray-500">
-              {profile.websiteUrl && <a href={profile.websiteUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 transition hover:text-violet-500 dark:hover:text-violet-400"><GlobeIcon className="h-4 w-4" /> {t.profile.website}</a>}
+              {profile.websiteUrl && <a href={profile.websiteUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 transition hover:text-violet-500 dark:hover:text-violet-400"> {t.profile.website}</a>}
               {profile.githubUrl && <a href={profile.githubUrl} target="_blank" rel="noopener noreferrer" className="transition hover:text-violet-500 dark:hover:text-violet-400">{t.profile.github}</a>}
               {profile.twitterUrl && <a href={profile.twitterUrl} target="_blank" rel="noopener noreferrer" className="transition hover:text-violet-500 dark:hover:text-violet-400">{t.profile.twitter}</a>}
               {profile.itchUrl && <a href={profile.itchUrl} target="_blank" rel="noopener noreferrer" className="transition hover:text-violet-500 dark:hover:text-violet-400">{t.profile.itch}</a>}

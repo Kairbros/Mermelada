@@ -91,13 +91,26 @@ export const PostSchema = {
   }
 }
 
+const ReplySchema = {
+  type: 'object',
+  properties: {
+    id:        { type: 'string' },
+    content:   { type: 'string' },
+    parentId:  { type: 'string', nullable: true },
+    createdAt: { type: 'string', format: 'date-time' },
+    user:      UserPublicSchema
+  }
+}
+
 export const CommentSchema = {
   type: 'object',
   properties: {
     id:        { type: 'string' },
     content:   { type: 'string' },
+    parentId:  { type: 'string', nullable: true },
     createdAt: { type: 'string', format: 'date-time' },
-    user:      UserPublicSchema
+    user:      UserPublicSchema,
+    replies:   { type: 'array', items: ReplySchema }
   }
 }
 
@@ -137,7 +150,8 @@ export const AuthResponseSchema = {
         displayName: { type: 'string' },
         email:       { type: 'string' },
         avatarUrl:   { type: 'string', nullable: true },
-        isVerified:  { type: 'boolean' }
+        isVerified:  { type: 'boolean' },
+        isAdmin:     { type: 'boolean' }
       }
     }
   }

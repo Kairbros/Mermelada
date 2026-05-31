@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { createPostSchema, createCommentSchema } from './posts.schema'
 import {
-  createPost, addPostImages, getPost, deletePost, getFeed,
+  createPost, addPostImages, getPost, updatePost, deletePost, getFeed,
   likePost, unlikePost, createComment, getComments, deleteComment
 } from './posts.service'
 import {
@@ -98,6 +98,28 @@ export async function postsRoutes(app: FastifyInstance) {
     return reply.send(await getPost(app, id, viewerId))
   })
 
+  // PATCH /posts/:id
+  app.patch('/:id', {
+    schema: {
+      tags: ['Posts'],
+      summary: 'Edit a post (owner only)',
+      security: bearer,
+      params: IdParamSchema,
+      body: {
+        type: 'object',
+        required: ['content'],
+        properties: { content: { type: 'string', minLength: 1, maxLength: 500 } }
+      },
+      response: { 200: PostSchema, 401: ErrorSchema, 403: ErrorSchema, 404: ErrorSchema }
+    },
+    preHandler: [app.authenticate]
+  }, async (request, reply) => {
+    const { sub } = request.user as { sub: string }
+    const { id } = request.params as { id: string }
+    const { content } = request.body as { content: string }
+    return reply.send(await updatePost(app, id, sub, content))
+  })
+
   // DELETE /posts/:id
   app.delete('/:id', {
     schema: {
@@ -168,13 +190,16 @@ export async function postsRoutes(app: FastifyInstance) {
   app.post('/:id/comments', {
     schema: {
       tags: ['Posts'],
-      summary: 'Add a comment to a post',
+      summary: 'Add a comment (or reply) to a post',
       security: bearer,
       params: IdParamSchema,
       body: {
         type: 'object',
         required: ['content'],
-        properties: { content: { type: 'string', minLength: 1, maxLength: 300 } }
+        properties: {
+          content:  { type: 'string', minLength: 1, maxLength: 300 },
+          parentId: { type: 'string', description: 'ID of comment being replied to (one level deep only)' }
+        }
       },
       response: { 201: CommentSchema, 401: ErrorSchema, 404: ErrorSchema }
     },
@@ -190,7 +215,7 @@ export async function postsRoutes(app: FastifyInstance) {
   app.delete('/:id/comments/:commentId', {
     schema: {
       tags: ['Posts'],
-      summary: 'Delete a comment (owner only)',
+      summary: 'Delete a comment (comment owner or post owner)',
       security: bearer,
       params: {
         type: 'object',
@@ -202,8 +227,8 @@ export async function postsRoutes(app: FastifyInstance) {
     preHandler: [app.authenticate]
   }, async (request, reply) => {
     const { sub } = request.user as { sub: string }
-    const { commentId } = request.params as { id: string; commentId: string }
-    await deleteComment(app, commentId, sub)
+    const { id, commentId } = request.params as { id: string; commentId: string }
+    await deleteComment(app, commentId, sub, id)
     return reply.code(204).send()
   })
 }

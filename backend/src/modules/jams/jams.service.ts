@@ -1,6 +1,8 @@
 import { FastifyInstance } from 'fastify'
 import { uploadFile, deleteFile } from '../../lib/storage'
-import { scheduleJamTransition, jamQueue } from '../../lib/queue'
+import { scheduleJamTransition, jamQueue, jamJobId } from '../../lib/queue'
+import type { JamJobData } from '../../lib/queue'
+import { notifyMany } from '../../lib/notifications'
 import type { CreateJamInput, UpdateJamInput } from './jams.schema'
 
 const PAGE_SIZE = 20
@@ -219,9 +221,9 @@ export async function cancelJam(app: FastifyInstance, slug: string, organizerId:
 
   // Remove scheduled BullMQ jobs
   await Promise.allSettled([
-    jamQueue.remove(`reveal-theme:${jam.id}`),
-    jamQueue.remove(`open-voting:${jam.id}`),
-    jamQueue.remove(`close-jam:${jam.id}`)
+    jamQueue.remove(jamJobId('reveal-theme', jam.id)),
+    jamQueue.remove(jamJobId('open-voting', jam.id)),
+    jamQueue.remove(jamJobId('close-jam', jam.id))
   ])
 
   const updated = await app.prisma.jam.update({
@@ -229,6 +231,72 @@ export async function cancelJam(app: FastifyInstance, slug: string, organizerId:
     data: { status: 'CLOSED' },
     select: { ...jamSelect, theme: true }
   })
+
+  return formatJam(updated, organizerId)
+}
+
+// Forward-only transitions the organizer may trigger manually, independent of the
+// background worker (covers cases where Redis/BullMQ timing fails or for testing).
+const NEXT_STATUS: Record<string, string> = {
+  OPEN: 'IN_PROGRESS',
+  IN_PROGRESS: 'VOTING',
+  VOTING: 'CLOSED'
+}
+
+// The scheduled worker job that becomes redundant once a phase is forced.
+const REDUNDANT_JOB: Record<string, JamJobData['type']> = {
+  IN_PROGRESS: 'reveal-theme',
+  VOTING: 'open-voting',
+  CLOSED: 'close-jam'
+}
+
+export async function transitionJam(
+  app: FastifyInstance,
+  slug: string,
+  organizerId: string,
+  target?: string
+) {
+  const jam = await app.prisma.jam.findUnique({ where: { slug } })
+  if (!jam) throw new Error('JAM_NOT_FOUND')
+  if (jam.organizerId !== organizerId) throw new Error('FORBIDDEN')
+
+  const next = NEXT_STATUS[jam.status]
+  if (!next) throw new Error('INVALID_TRANSITION')
+  if (target && target !== next) throw new Error('INVALID_TRANSITION')
+
+  const data: any = { status: next }
+  if (next === 'IN_PROGRESS') data.themeRevealed = true
+
+  const updated = await app.prisma.jam.update({
+    where: { id: jam.id },
+    data,
+    select: { ...jamSelect, theme: true }
+  })
+
+  // Drop the now-redundant scheduled job so it doesn't fire again later.
+  const jobType = REDUNDANT_JOB[next]
+  if (jobType) await jamQueue.remove(jamJobId(jobType, jam.id)).catch(() => {})
+
+  // Mirror the worker's participant notifications.
+  const participantIds = (await app.prisma.jamParticipation.findMany({
+    where: { jamId: jam.id },
+    select: { userId: true }
+  })).map(r => r.userId)
+
+  if (next === 'VOTING') {
+    await notifyMany(app.prisma, participantIds, {
+      type: 'JAM_VOTING_OPEN', jamId: jam.id, jamSlug: jam.slug, jamTitle: jam.title
+    }).catch(() => null)
+  } else if (next === 'CLOSED') {
+    const allIds = [...new Set([...participantIds, jam.organizerId])]
+    await notifyMany(app.prisma, allIds, {
+      type: 'JAM_RESULTS_PUBLISHED', jamId: jam.id, jamSlug: jam.slug, jamTitle: jam.title
+    }).catch(() => null)
+  } else {
+    await notifyMany(app.prisma, participantIds, {
+      type: 'JAM_STATUS_CHANGED', jamId: jam.id, jamSlug: jam.slug, jamTitle: jam.title, newStatus: next
+    }).catch(() => null)
+  }
 
   return formatJam(updated, organizerId)
 }

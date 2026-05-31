@@ -66,18 +66,22 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
   const [submitDesc, setSubmitDesc] = useState('')
   const [submitUrl, setSubmitUrl] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  // Files attached in the create form, uploaded right after the submission is created
+  const [submitFile, setSubmitFile] = useState<File | null>(null)
+  const [submitShots, setSubmitShots] = useState<File[]>([])
 
-  const [myVote, setMyVote] = useState<{ submissionId: string; score: number; comment: string } | null>(null)
-  const [voteLoading, setVoteLoading] = useState(false)
-  const [showVoteForm, setShowVoteForm] = useState<string | null>(null)
-  const [voteScore, setVoteScore] = useState(5)
-  const [voteComment, setVoteComment] = useState('')
+  // Per-submission ratings: each voter rates every entry they want (1-10).
+  const [myVotes, setMyVotes] = useState<Record<string, { score: number; comment: string }>>({})
+  const [savingVote, setSavingVote] = useState<string | null>(null)
 
   const [results, setResults] = useState<Result[]>([])
   const [resultsLoaded, setResultsLoaded] = useState(false)
 
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+
+  const [showAdvanceConfirm, setShowAdvanceConfirm] = useState(false)
+  const [advancing, setAdvancing] = useState(false)
 
   const [publishing, setPublishing] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
@@ -107,7 +111,7 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
     if (!user) {
       setParticipating(false)
       setMyTeamId(null)
-      setMyVote(null)
+      setMyVotes({})
       setMySubmission(null)
       return
     }
@@ -148,9 +152,11 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
   useEffect(() => {
     if (tab !== 'submissions' || !jam || jam.status !== 'VOTING' || !accessToken) return
     api.get(`jams/${slug}/votes/me`, { headers: { Authorization: `Bearer ${accessToken}` } })
-      .json<Vote>()
-      .then(vote => {
-        if (vote) setMyVote({ submissionId: vote.submission.id, score: vote.score, comment: vote.comment ?? '' })
+      .json<{ items: { submissionId: string; score: number; comment: string | null }[] }>()
+      .then(({ items }) => {
+        const map: Record<string, { score: number; comment: string }> = {}
+        for (const v of items) map[v.submissionId] = { score: v.score, comment: v.comment ?? '' }
+        setMyVotes(map)
       })
       .catch(() => {})
   }, [tab, jam?.status, slug, accessToken])
@@ -251,64 +257,67 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
   async function handleCreateSubmission(e: React.FormEvent) {
     e.preventDefault()
     if (!accessToken || !submitTitle.trim() || !submitDesc.trim()) return
-    setSubmitting(true)
+    setSubmitting(true); setSubError(null)
     try {
-      const sub = await api.post(`jams/${slug}/submissions`, {
+      // 1. Create the submission record
+      let sub = await api.post(`jams/${slug}/submissions`, {
         json: { title: submitTitle.trim(), description: submitDesc.trim(), externalUrl: submitUrl.trim() || undefined },
         headers: { Authorization: `Bearer ${accessToken}` }
       }).json<Submission>()
+
+      // 2. Upload the game file (if attached) before finishing
+      if (submitFile) {
+        const fd = new FormData()
+        fd.append('file', submitFile)
+        const res = await api.post(`jams/${slug}/submissions/${sub.id}/file`, {
+          body: fd, headers: { Authorization: `Bearer ${accessToken}` }, timeout: false
+        }).json<{ fileUrl: string; fileSizeBytes: number }>()
+        sub = { ...sub, fileUrl: res.fileUrl, fileSizeBytes: res.fileSizeBytes }
+      }
+
+      // 3. Upload screenshots (if attached)
+      for (const shot of submitShots.slice(0, 5)) {
+        try {
+          const fd = new FormData()
+          fd.append('file', shot)
+          const s = await api.post(`jams/${slug}/submissions/${sub.id}/screenshots`, {
+            body: fd, headers: { Authorization: `Bearer ${accessToken}` }
+          }).json<{ id: string; url: string; order: number }>()
+          sub = { ...sub, screenshots: [...sub.screenshots, s] }
+        } catch { /* skip a failed screenshot */ }
+      }
+
       setMySubmission(sub)
       setSubmissions(prev => [sub, ...prev])
       setJam(p => p ? { ...p, _count: { ...p._count, submissions: p._count.submissions + 1 } } : p)
       setShowSubmitForm(false)
-      setSubmitTitle(''); setSubmitDesc(''); setSubmitUrl('')
-    } catch { /* silently fail */ } finally { setSubmitting(false) }
+      setSubmitTitle(''); setSubmitDesc(''); setSubmitUrl(''); setSubmitFile(null); setSubmitShots([])
+    } catch { setSubError('Could not submit your game. Please try again.') } finally { setSubmitting(false) }
   }
 
-  async function handleCastVote(submissionId: string) {
+  async function handleRate(submissionId: string, score: number, comment: string) {
     if (!accessToken) return
-    setVoteLoading(true)
+    setSavingVote(submissionId)
     try {
       const v = await api.post(`jams/${slug}/votes`, {
-        json: { submissionId, score: voteScore, comment: voteComment.trim() || undefined },
+        json: { submissionId, score, comment: comment.trim() || undefined },
         headers: { Authorization: `Bearer ${accessToken}` }
       }).json<Vote>()
-      setMyVote({ submissionId: v.submission.id, score: v.score, comment: v.comment ?? '' })
-      setShowVoteForm(null)
-    } catch { /* silently fail */ } finally { setVoteLoading(false) }
+      setMyVotes(prev => ({ ...prev, [submissionId]: { score: v.score, comment: v.comment ?? '' } }))
+    } catch { /* silently fail */ } finally { setSavingVote(null) }
   }
 
-  async function handleUpdateVote() {
-    if (!accessToken || !myVote) return
-    setVoteLoading(true)
-    try {
-      const v = await api.patch(`jams/${slug}/votes`, {
-        json: { score: voteScore, comment: voteComment.trim() || undefined },
-        headers: { Authorization: `Bearer ${accessToken}` }
-      }).json<Vote>()
-      setMyVote({ submissionId: v.submission.id, score: v.score, comment: v.comment ?? '' })
-      setShowVoteForm(null)
-    } catch { /* silently fail */ } finally { setVoteLoading(false) }
-  }
-
-  async function handleRetractVote() {
+  async function handleRetractVote(submissionId: string) {
     if (!accessToken) return
-    setVoteLoading(true)
+    setSavingVote(submissionId)
     try {
-      await api.delete(`jams/${slug}/votes`, { headers: { Authorization: `Bearer ${accessToken}` } })
-      setMyVote(null)
-    } catch { /* silently fail */ } finally { setVoteLoading(false) }
-  }
-
-  function openVoteForm(sub: Submission) {
-    if (myVote?.submissionId === sub.id) {
-      setVoteScore(myVote.score)
-      setVoteComment(myVote.comment)
-    } else {
-      setVoteScore(5)
-      setVoteComment('')
-    }
-    setShowVoteForm(sub.id)
+      await api.delete(`jams/${slug}/votes/${submissionId}`, { headers: { Authorization: `Bearer ${accessToken}` } })
+      setMyVotes(prev => {
+        const next = { ...prev }
+        delete next[submissionId]
+        return next
+      })
+    } catch { /* silently fail */ } finally { setSavingVote(null) }
   }
 
   async function handlePublish() {
@@ -346,6 +355,16 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
       setJam(updated)
       setShowCancelConfirm(false)
     } catch { /* silently fail */ } finally { setCancelling(false) }
+  }
+
+  async function handleAdvance() {
+    if (!accessToken) return
+    setAdvancing(true)
+    try {
+      const updated = await api.post(`jams/${slug}/advance`, { headers: { Authorization: `Bearer ${accessToken}` } }).json<Jam>()
+      setJam(updated)
+      setShowAdvanceConfirm(false)
+    } catch { /* silently fail */ } finally { setAdvancing(false) }
   }
 
   function openEditSub() {
@@ -399,6 +418,12 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
   async function handleUploadScreenshot(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file || !accessToken || !mySubmission) return
+    const allowed = ['image/jpeg', 'image/png', 'image/webp']
+    if (!allowed.includes(file.type)) {
+      setSubError('Only JPEG, PNG and WebP images are supported.')
+      e.target.value = ''
+      return
+    }
     setUploadingShot(true); setSubError(null)
     try {
       const formData = new FormData()
@@ -408,6 +433,20 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
       }).json<{ id: string; url: string; order: number }>()
       setMySubmission(prev => prev ? { ...prev, screenshots: [...prev.screenshots, shot] } : prev)
     } catch { setSubError('Could not upload screenshot (max 5, 10MB each).') } finally { setUploadingShot(false); e.target.value = '' }
+  }
+
+  async function handleDeleteScreenshot(screenshotId: string) {
+    if (!accessToken || !mySubmission) return
+    setMySubmission(prev => prev ? { ...prev, screenshots: prev.screenshots.filter(s => s.id !== screenshotId) } : prev)
+    api.delete(`jams/${slug}/submissions/${mySubmission.id}/screenshots/${screenshotId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    }).catch(() => {
+      // revert optimistic update on failure
+      api.get(`jams/${slug}/submissions/${mySubmission.id}`)
+        .json<Submission>()
+        .then(s => setMySubmission(s))
+        .catch(() => {})
+    })
   }
 
   const statusLabels: Record<string, string> = {
@@ -449,6 +488,14 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
 
   const gradient = pickGradient(jam.id)
   const isOrganizer = user?.id === jam.organizer.id
+
+  // Organizer manual phase advancement (forward-only): OPEN→IN_PROGRESS→VOTING→CLOSED
+  const advanceConfig: Record<string, { label: string; title: string; desc: string }> = {
+    OPEN:        { label: t.jamDetail.advanceStart,  title: t.jamDetail.advanceStartDialog,  desc: t.jamDetail.advanceStartDialogDesc },
+    IN_PROGRESS: { label: t.jamDetail.advanceVoting, title: t.jamDetail.advanceVotingDialog, desc: t.jamDetail.advanceVotingDialogDesc },
+    VOTING:      { label: t.jamDetail.advanceClose,  title: t.jamDetail.advanceCloseDialog,  desc: t.jamDetail.advanceCloseDialogDesc },
+  }
+  const advance = advanceConfig[jam.status]
   const canJoin = (jam.status === 'OPEN' || jam.status === 'IN_PROGRESS') && !isOrganizer
   const showTeamsTab = jam.teamMode !== 'SOLO_ONLY'
   const showSubmissionsTab = ['IN_PROGRESS', 'SUBMISSIONS', 'VOTING', 'CLOSED'].includes(jam.status)
@@ -475,26 +522,34 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
         {/* Header */}
         <div className="-mt-20 relative mb-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-            <div className="flex flex-col gap-3">
+            <div className="flex min-w-0 flex-col gap-3">
               <span className={`label-mono w-fit rounded-md px-2.5 py-1 ${STATUS_STYLES[jam.status] ?? ''}`}>
                 {statusLabels[jam.status] ?? jam.status}
               </span>
-              <h1 className="text-3xl font-bold text-white sm:text-4xl">{jam.title}</h1>
+              <h1 className="text-3xl font-bold text-white sm:text-4xl break-words">{jam.title}</h1>
               <div className="flex items-center gap-2">
                 <Avatar name={jam.organizer.displayName} src={jam.organizer.avatarUrl} size="xs" />
-                <span className="text-sm text-gray-400">
+                <span className="min-w-0 truncate text-sm text-gray-400">
                   {t.jamDetail.by} <Link href={`/users/${jam.organizer.username}`} className="text-gray-300 hover:text-violet-300 transition">{jam.organizer.displayName}</Link>
                 </span>
               </div>
             </div>
 
-            <div className="flex flex-col items-start gap-2 sm:items-end">
+            <div className="flex w-full shrink-0 flex-col items-start gap-2 sm:w-auto sm:items-end">
               {isOrganizer ? (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
+                  {advance && (
+                    <button
+                      onClick={() => setShowAdvanceConfirm(true)}
+                      disabled={advancing}
+                      className="shrink-0 rounded-xl bg-violet-600 px-5 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-50 transition">
+                      {advancing ? t.jamDetail.advancing : advance.label}
+                    </button>
+                  )}
                   {jam.status !== 'DRAFT' && jam.status !== 'CLOSED' && (
                     <button
                       onClick={() => setShowCancelConfirm(true)}
-                      className="rounded-xl border border-gray-700 px-5 py-2 text-sm font-medium text-gray-400 hover:border-red-500/50 hover:text-red-400 transition">
+                      className="shrink-0 rounded-xl border border-gray-700 px-5 py-2 text-sm font-medium text-gray-400 hover:border-red-500/50 hover:text-red-400 transition">
                       {t.jamDetail.cancelJam}
                     </button>
                   )}
@@ -504,7 +559,7 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
                   <button
                     onClick={participating ? handleLeave : handleJoin}
                     disabled={actionLoading}
-                    className={`rounded-xl px-6 py-2.5 font-medium transition disabled:opacity-50 ${
+                    className={`shrink-0 rounded-xl px-6 py-2.5 font-medium transition disabled:opacity-50 ${
                       participating
                         ? 'border border-gray-700 text-gray-300 hover:border-red-500/50 hover:text-red-400'
                         : 'bg-violet-600 text-white hover:bg-violet-500'
@@ -514,7 +569,7 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
                   </button>
                 ) : null
               ) : (
-                <Link href="/login" className="rounded-xl bg-violet-600 px-6 py-2.5 text-center font-medium text-white hover:bg-violet-500 transition">
+                <Link href="/login" className="shrink-0 rounded-xl bg-violet-600 px-6 py-2.5 text-center font-medium text-white hover:bg-violet-500 transition">
                   {t.jamDetail.signInJoin}
                 </Link>
               )}
@@ -750,6 +805,55 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
                             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-violet-500 transition"
                             placeholder={t.jamDetail.gameLinkPlaceholder} />
                         </div>
+
+                        {/* Game file — attached here, uploaded together with the submission */}
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">{t.jamDetail.gameFile} <span className="text-gray-600">{t.jamDetail.gameFileHint}</span></label>
+                          <div className="flex items-center gap-2">
+                            <label className="shrink-0 cursor-pointer rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:border-violet-500 hover:text-white transition">
+                              {submitFile ? t.jamDetail.replace : t.jamDetail.chooseFile}
+                              <input type="file" className="hidden" onChange={e => setSubmitFile(e.target.files?.[0] ?? null)} />
+                            </label>
+                            {submitFile ? (
+                              <span className="min-w-0 truncate text-xs text-emerald-400">{submitFile.name} · {formatBytes(submitFile.size)}</span>
+                            ) : (
+                              <span className="text-xs text-gray-600">{t.jamDetail.noFileChosen}</span>
+                            )}
+                            {submitFile && (
+                              <button type="button" onClick={() => setSubmitFile(null)} className="shrink-0 text-xs text-gray-500 hover:text-red-400 transition">×</button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Screenshots */}
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">{t.jamDetail.screenshots} <span className="text-gray-600">({submitShots.length}/5)</span></label>
+                          {submitShots.length < 5 && (
+                            <label className="inline-block shrink-0 cursor-pointer rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:border-violet-500 hover:text-white transition">
+                              {t.jamDetail.addScreenshots}
+                              <input type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden"
+                                onChange={e => {
+                                  const picked = Array.from(e.target.files ?? []).filter(f => ['image/jpeg', 'image/png', 'image/webp'].includes(f.type))
+                                  setSubmitShots(prev => [...prev, ...picked].slice(0, 5))
+                                  e.target.value = ''
+                                }} />
+                            </label>
+                          )}
+                          {submitShots.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {submitShots.map((f, i) => (
+                                <span key={i} className="inline-flex items-center gap-1 rounded-lg bg-gray-800 px-2 py-1 text-xs text-gray-300">
+                                  <span className="max-w-[120px] truncate">{f.name}</span>
+                                  <button type="button" onClick={() => setSubmitShots(prev => prev.filter((_, idx) => idx !== i))}
+                                    className="text-gray-500 hover:text-red-400 transition">×</button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {subError && <p className="text-xs text-red-400">{subError}</p>}
+
                         <div className="flex gap-2">
                           <button type="submit" disabled={submitting || !submitTitle.trim() || !submitDesc.trim()}
                             className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 px-5 py-2 text-sm font-medium text-white transition">
@@ -801,10 +905,62 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
                             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-500 transition"
                             placeholder="https://…" />
                         </div>
-                        <div className="flex gap-2">
+
+                        {/* Game file management */}
+                        <div className="border-t border-violet-500/20 pt-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-gray-300">{t.jamDetail.gameFile}</p>
+                              {mySubmission.fileUrl ? (
+                                <p className="text-xs text-emerald-400 truncate">
+                                  {t.jamDetail.fileUploaded}{mySubmission.fileSizeBytes ? ` · ${formatBytes(mySubmission.fileSizeBytes)}` : ''}
+                                </p>
+                              ) : (
+                                <p className="text-xs text-gray-600">{t.jamDetail.noFile}</p>
+                              )}
+                            </div>
+                            <label className="shrink-0 cursor-pointer rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:border-violet-500 hover:text-white transition">
+                              {uploadingFile ? t.jamDetail.uploading : mySubmission.fileUrl ? t.jamDetail.replace : t.jamDetail.upload}
+                              <input type="file" className="hidden" onChange={handleUploadGameFile} disabled={uploadingFile} />
+                            </label>
+                          </div>
+                        </div>
+
+                        {/* Screenshots management */}
+                        <div>
+                          <div className="flex items-center justify-between gap-3 mb-2">
+                            <p className="text-xs font-medium text-gray-300">{t.jamDetail.screenshots} <span className="text-gray-600">({mySubmission.screenshots.length}/5)</span></p>
+                            {mySubmission.screenshots.length < 5 && (
+                              <label className="shrink-0 cursor-pointer rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:border-violet-500 hover:text-white transition">
+                                {uploadingShot ? t.jamDetail.uploading : t.jamDetail.addScreenshots}
+                                <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={handleUploadScreenshot} disabled={uploadingShot} />
+                              </label>
+                            )}
+                          </div>
+                          {mySubmission.screenshots.length > 0 && (
+                            <div className="grid grid-cols-3 gap-1.5">
+                              {mySubmission.screenshots.map(s => (
+                                <div key={s.id} className="group relative">
+                                  <img src={s.url} alt="" className="h-20 w-full rounded-lg object-cover" />
+                                  <button
+                                    onClick={() => handleDeleteScreenshot(s.id)}
+                                    className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white opacity-0 transition hover:bg-red-600 group-hover:opacity-100"
+                                    title="Remove screenshot"
+                                  >
+                                    <span className="text-xs leading-none">×</span>
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {subError && <p className="text-xs text-red-400">{subError}</p>}
+
+                        <div className="flex gap-2 border-t border-violet-500/20 pt-3">
                           <button onClick={handleSaveSub} disabled={savingSub || !editTitle.trim() || !editDesc.trim()}
                             className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 px-4 py-1.5 text-sm font-medium text-white transition">
-                            {savingSub ? t.common.saving : t.common.save}
+                            {savingSub ? t.common.saving : t.jamDetail.done}
                           </button>
                           <button onClick={() => setShowEditSub(false)}
                             className="rounded-lg border border-gray-700 px-4 py-1.5 text-sm text-gray-400 hover:text-white transition">
@@ -813,47 +969,29 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
                         </div>
                       </div>
                     ) : (
-                      <SubmissionCard submission={mySubmission} isOwn={true} myVote={null} showVoting={false} onVote={() => {}} t={t} />
+                      <SubmissionCard submission={mySubmission} isOwn={true} t={t} />
                     )}
+                  </div>
+                )}
 
-                    {jam.status === 'IN_PROGRESS' && mySubmission.user.id === user?.id && !showEditSub && (
-                      <div className="mt-4 space-y-3 border-t border-violet-500/20 pt-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-xs font-medium text-gray-300">{t.jamDetail.gameFile}</p>
-                            {mySubmission.fileUrl ? (
-                              <p className="text-xs text-emerald-400 truncate">
-                                {t.jamDetail.fileUploaded}{mySubmission.fileSizeBytes ? ` · ${formatBytes(mySubmission.fileSizeBytes)}` : ''}
-                              </p>
-                            ) : (
-                              <p className="text-xs text-gray-600">{t.jamDetail.noFile}</p>
-                            )}
-                          </div>
-                          <label className="shrink-0 cursor-pointer rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:border-violet-500 hover:text-white transition">
-                            {uploadingFile ? t.jamDetail.uploading : mySubmission.fileUrl ? t.jamDetail.replace : t.jamDetail.upload}
-                            <input type="file" className="hidden" onChange={handleUploadGameFile} disabled={uploadingFile} />
-                          </label>
-                        </div>
-                        <div>
-                          <div className="flex items-center justify-between gap-3 mb-2">
-                            <p className="text-xs font-medium text-gray-300">{t.jamDetail.screenshots} <span className="text-gray-600">({mySubmission.screenshots.length}/5)</span></p>
-                            {mySubmission.screenshots.length < 5 && (
-                              <label className="shrink-0 cursor-pointer rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:border-violet-500 hover:text-white transition">
-                                {uploadingShot ? t.jamDetail.uploading : t.jamDetail.addScreenshots}
-                                <input type="file" accept="image/*" className="hidden" onChange={handleUploadScreenshot} disabled={uploadingShot} />
-                              </label>
-                            )}
-                          </div>
-                          {mySubmission.screenshots.length > 0 && (
-                            <div className="grid grid-cols-3 gap-1.5">
-                              {mySubmission.screenshots.map(s => (
-                                <img key={s.id} src={s.url} alt="" className="h-20 w-full rounded-lg object-cover" />
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                        {subError && <p className="text-xs text-red-400">{subError}</p>}
+                {/* Organizer preview: see all entries while the jam is still in progress */}
+                {isOrganizer && jam.status === 'IN_PROGRESS' && (
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 px-4 py-3">
+                      <p className="text-sm text-violet-200/90">{t.jamDetail.organizerPreview}</p>
+                    </div>
+                    {!submissionsLoaded ? (
+                      <div className="space-y-3">
+                        {Array.from({ length: 3 }).map((_, i) => (
+                          <div key={i} className="h-28 animate-pulse rounded-xl bg-gray-800/60" />
+                        ))}
                       </div>
+                    ) : submissions.length === 0 ? (
+                      <div className="py-16 text-center text-gray-500">{t.jamDetail.noSubmissions}</div>
+                    ) : (
+                      submissions.map(sub => (
+                        <SubmissionCard key={sub.id} submission={sub} isOwn={sub.user.id === user?.id} t={t} />
+                      ))
                     )}
                   </div>
                 )}
@@ -869,54 +1007,40 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
                     ) : submissions.length === 0 ? (
                       <div className="py-16 text-center text-gray-500">{t.jamDetail.noSubmissions}</div>
                     ) : (
-                      <div className="space-y-4">
-                        {submissions.map(sub => {
-                          const isOwnSub = sub.user.id === user?.id
-                          const isVoted = myVote?.submissionId === sub.id
+                      <>
+                        {jam.status === 'VOTING' && user && (() => {
+                          const votable = submissions.filter(s => s.user.id !== user.id)
+                          const rated = votable.filter(s => myVotes[s.id]).length
                           return (
-                            <div key={sub.id}>
-                              <SubmissionCard submission={sub} isOwn={isOwnSub} myVote={isVoted ? myVote : null} showVoting={jam.status === 'VOTING' && !!user && !isOwnSub} onVote={() => openVoteForm(sub)} t={t} />
-
-                              {showVoteForm === sub.id && (
-                                <div className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-                                  <div className="flex items-center justify-between mb-3">
-                                    <p className="text-sm font-medium text-amber-300">
-                                      {isVoted ? t.jamDetail.updateVote : t.jamDetail.castVote}
-                                    </p>
-                                    <button onClick={() => setShowVoteForm(null)} className="text-gray-500 hover:text-gray-300 text-sm">×</button>
-                                  </div>
-                                  <div className="mb-3">
-                                    <div className="flex items-center justify-between mb-1">
-                                      <label className="text-xs text-gray-400">{t.jamDetail.score}</label>
-                                      <span className="text-sm font-bold text-white">{voteScore} / 10</span>
-                                    </div>
-                                    <input type="range" min={1} max={10} value={voteScore} onChange={e => setVoteScore(Number(e.target.value))} className="w-full accent-violet-500" />
-                                    <div className="flex justify-between text-xs text-gray-600 mt-0.5"><span>1</span><span>10</span></div>
-                                  </div>
-                                  <div className="mb-3">
-                                    <label className="block text-xs text-gray-400 mb-1">{t.jamDetail.comment} <span className="text-gray-600">{t.jamDetail.optional}</span></label>
-                                    <textarea value={voteComment} onChange={e => setVoteComment(e.target.value)} maxLength={750} rows={2}
-                                      className="w-full resize-none bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-violet-500 transition"
-                                      placeholder={t.jamDetail.commentPlaceholder} />
-                                  </div>
-                                  <div className="flex gap-2">
-                                    <button onClick={() => isVoted ? handleUpdateVote() : handleCastVote(sub.id)} disabled={voteLoading}
-                                      className="rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black font-medium px-4 py-1.5 text-sm transition">
-                                      {voteLoading ? '…' : isVoted ? t.jamDetail.update : t.jamDetail.vote}
-                                    </button>
-                                    {isVoted && (
-                                      <button onClick={handleRetractVote} disabled={voteLoading}
-                                        className="rounded-lg border border-gray-700 text-gray-400 hover:text-red-400 px-4 py-1.5 text-sm transition disabled:opacity-50">
-                                        {t.jamDetail.retract}
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
+                            <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+                              <p className="text-sm text-amber-200/90">{t.jamDetail.votingIntro}</p>
+                              {votable.length > 0 && (
+                                <p className="mt-1 text-xs text-amber-300/70">{t.jamDetail.ratedProgress(rated, votable.length)}</p>
                               )}
                             </div>
                           )
-                        })}
-                      </div>
+                        })()}
+                        <div className="space-y-4">
+                          {submissions.map(sub => {
+                            const isOwnSub = sub.user.id === user?.id
+                            const canVote = jam.status === 'VOTING' && !!user && !isOwnSub
+                            return (
+                              <div key={sub.id}>
+                                <SubmissionCard submission={sub} isOwn={isOwnSub} t={t} />
+                                {canVote && (
+                                  <VoteWidget
+                                    vote={myVotes[sub.id]}
+                                    saving={savingVote === sub.id}
+                                    onRate={(score, comment) => handleRate(sub.id, score, comment)}
+                                    onRetract={() => handleRetractVote(sub.id)}
+                                    t={t}
+                                  />
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </>
                     )}
                   </>
                 )}
@@ -942,35 +1066,50 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
                 ) : results.length === 0 ? (
                   <div className="py-16 text-center text-gray-500">{t.jamDetail.noResults}</div>
                 ) : (
-                  results.map(r => (
-                    <div key={r.submission.id} className={`flex items-start gap-4 rounded-xl border p-4 ${
-                      r.rank === 1 ? 'border-amber-500/30 bg-amber-500/5' :
-                      r.rank === 2 ? 'border-gray-400/20 bg-gray-400/5' :
-                      r.rank === 3 ? 'border-orange-700/30 bg-orange-900/5' :
-                      'border-gray-800 bg-gray-900'
-                    }`}>
-                      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
-                        r.rank === 1 ? 'bg-amber-500 text-black' :
-                        r.rank === 2 ? 'bg-gray-400 text-black' :
-                        r.rank === 3 ? 'bg-orange-700 text-white' :
-                        'bg-gray-800 text-gray-400'
-                      }`}>#{r.rank}</div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-white truncate">{r.submission.title}</p>
-                        <p className="text-xs text-gray-500 mt-0.5">
-                          {t.jamDetail.by} {r.submission.user.displayName}
-                          {r.submission.team && <> · {r.submission.team.name}</>}
-                        </p>
-                        {r.submission.description && (
-                          <p className="text-sm text-gray-400 mt-1 line-clamp-2">{r.submission.description}</p>
-                        )}
-                      </div>
-                      <div className="shrink-0 text-right">
-                        <p className="text-lg font-bold text-white">{r.avgScore.toFixed(1)}</p>
-                        <p className="text-xs text-gray-500">{r.voteCount} vote{r.voteCount !== 1 ? 's' : ''}</p>
-                      </div>
-                    </div>
-                  ))
+                  results.map(r => {
+                    const href = r.submission.fileUrl || r.submission.externalUrl || null
+                    const Wrapper: React.ElementType = href ? 'a' : 'div'
+                    const wrapperProps: Record<string, unknown> = href
+                      ? { href, target: '_blank', rel: 'noopener noreferrer' }
+                      : {}
+                    return (
+                      <Wrapper key={r.submission.id} {...wrapperProps}
+                        className={`flex items-start gap-4 rounded-xl border p-4 transition ${href ? 'cursor-pointer hover:border-violet-500/50' : ''} ${
+                          r.rank === 1 ? 'border-amber-500/30 bg-amber-500/5' :
+                          r.rank === 2 ? 'border-gray-400/20 bg-gray-400/5' :
+                          r.rank === 3 ? 'border-orange-700/30 bg-orange-900/5' :
+                          'border-gray-800 bg-gray-900'
+                        }`}>
+                        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
+                          r.rank === 1 ? 'bg-amber-500 text-black' :
+                          r.rank === 2 ? 'bg-gray-400 text-black' :
+                          r.rank === 3 ? 'bg-orange-700 text-white' :
+                          'bg-gray-800 text-gray-400'
+                        }`}>#{r.rank}</div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-white truncate">{r.submission.title}</p>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            {t.jamDetail.by} {r.submission.user.displayName}
+                            {r.submission.team && <> · {r.submission.team.name}</>}
+                          </p>
+                          {r.submission.description && (
+                            <p className="text-sm text-gray-400 mt-1 line-clamp-2">{r.submission.description}</p>
+                          )}
+                          {href && (
+                            <span className="mt-1.5 inline-flex items-center gap-1 text-xs text-sky-400">
+                              {r.submission.fileUrl
+                                ? <>↓ {t.jamDetail.downloadFile}{r.submission.fileSizeBytes ? ` (${formatBytes(r.submission.fileSizeBytes)})` : ''}</>
+                                : <>{t.jamDetail.playGame}</>}
+                            </span>
+                          )}
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="text-lg font-bold text-white">{r.avgScore.toFixed(1)}</p>
+                          <p className="text-xs text-gray-500">{r.voteCount} vote{r.voteCount !== 1 ? 's' : ''}</p>
+                        </div>
+                      </Wrapper>
+                    )
+                  })
                 )}
               </div>
             )}
@@ -1053,6 +1192,26 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
           </div>
         </div>
       )}
+
+      {/* Advance phase confirmation */}
+      {showAdvanceConfirm && advance && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-2xl border border-gray-700 bg-gray-900 p-6">
+            <h3 className="text-lg font-semibold text-white mb-2">{advance.title}</h3>
+            <p className="text-gray-400 text-sm mb-6">{advance.desc}</p>
+            <div className="flex gap-3">
+              <button onClick={handleAdvance} disabled={advancing}
+                className="flex-1 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-medium py-2 transition">
+                {advancing ? t.jamDetail.advancing : t.jamDetail.confirm}
+              </button>
+              <button onClick={() => setShowAdvanceConfirm(false)}
+                className="flex-1 rounded-lg border border-gray-700 text-gray-300 hover:text-white py-2 transition">
+                {t.jamDetail.keepIt}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1065,13 +1224,10 @@ function formatBytes(bytes: number) {
 }
 
 function SubmissionCard({
-  submission, isOwn, myVote, showVoting, onVote, t
+  submission, isOwn, t
 }: {
   submission: Submission
   isOwn: boolean
-  myVote: { score: number; comment: string } | null
-  showVoting: boolean
-  onVote: () => void
   t: Translations
 }) {
   return (
@@ -1089,28 +1245,20 @@ function SubmissionCard({
           {submission.description && (
             <p className="mt-2 line-clamp-3 text-sm text-gray-500 dark:text-gray-400">{submission.description}</p>
           )}
-          {submission.externalUrl && (
-            <a href={submission.externalUrl} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 mt-2 text-xs text-violet-400 hover:text-violet-300 transition">
-              {t.jamDetail.playGame}
-            </a>
-          )}
-        </div>
-        <div className="shrink-0 flex flex-col items-end gap-2">
-          {myVote && (
-            <div className="text-center">
-              <p className="text-lg font-bold text-amber-400">{myVote.score}</p>
-              <p className="text-[10px] text-gray-600">{t.jamDetail.yourVote}</p>
-            </div>
-          )}
-          {showVoting && (
-            <button onClick={onVote}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                myVote ? 'border border-amber-500/40 text-amber-400 hover:bg-amber-500/10' : 'bg-amber-500 hover:bg-amber-400 text-black'
-              }`}>
-              {myVote ? t.jamDetail.editVote : t.jamDetail.vote}
-            </button>
-          )}
+          <div className="mt-2 flex flex-wrap gap-3">
+            {submission.externalUrl && (
+              <a href={submission.externalUrl} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300 transition">
+                {t.jamDetail.playGame}
+              </a>
+            )}
+            {submission.fileUrl && (
+              <a href={submission.fileUrl} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 transition">
+                ↓ {t.jamDetail.gameFile}{submission.fileSizeBytes ? ` (${formatBytes(submission.fileSizeBytes)})` : ''}
+              </a>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1119,6 +1267,67 @@ function SubmissionCard({
           {submission.screenshots.slice(0, 3).map(s => (
             <img key={s.id} src={s.url} alt="" className="w-full object-cover h-24 rounded-lg" />
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Interactive per-submission rating shown during the VOTING phase.
+function VoteWidget({
+  vote, saving, onRate, onRetract, t
+}: {
+  vote?: { score: number; comment: string }
+  saving: boolean
+  onRate: (score: number, comment: string) => void
+  onRetract: () => void
+  t: Translations
+}) {
+  const [showComment, setShowComment] = useState(false)
+  const [comment, setComment] = useState(vote?.comment ?? '')
+
+  useEffect(() => { setComment(vote?.comment ?? '') }, [vote?.comment])
+
+  return (
+    <div className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-amber-300">
+          {vote ? `${t.jamDetail.yourRating}: ${vote.score}/10` : t.jamDetail.rateThis}
+        </span>
+        {saving && <span className="text-xs text-gray-500">{t.common.saving}</span>}
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {Array.from({ length: 10 }, (_, i) => i + 1).map(n => {
+          const active = vote?.score === n
+          return (
+            <button key={n} disabled={saving} onClick={() => onRate(n, comment)}
+              className={`h-8 w-8 rounded-lg text-sm font-semibold transition disabled:opacity-50 ${
+                active ? 'bg-amber-500 text-black' : 'bg-gray-800 text-gray-300 hover:bg-amber-500/20 hover:text-amber-300'
+              }`}>
+              {n}
+            </button>
+          )
+        })}
+      </div>
+      <div className="mt-2 flex items-center gap-3">
+        <button onClick={() => setShowComment(v => !v)} className="text-xs text-gray-400 transition hover:text-amber-300">
+          {showComment ? t.jamDetail.hideComment : (vote?.comment ? t.jamDetail.editComment : t.jamDetail.addNote)}
+        </button>
+        {vote && (
+          <button onClick={onRetract} disabled={saving} className="text-xs text-gray-500 transition hover:text-red-400 disabled:opacity-50">
+            {t.jamDetail.clearRating}
+          </button>
+        )}
+      </div>
+      {showComment && (
+        <div className="mt-2">
+          <textarea value={comment} onChange={e => setComment(e.target.value)} maxLength={750} rows={2}
+            placeholder={t.jamDetail.commentPlaceholder}
+            className="w-full resize-none rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 transition focus:border-amber-500 focus:outline-none" />
+          <button onClick={() => onRate(vote?.score ?? 5, comment)} disabled={saving}
+            className="mt-1.5 rounded-lg bg-amber-500 px-3 py-1 text-xs font-medium text-black transition hover:bg-amber-400 disabled:opacity-50">
+            {t.jamDetail.saveComment}
+          </button>
         </div>
       )}
     </div>

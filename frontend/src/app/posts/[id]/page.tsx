@@ -3,7 +3,6 @@ import { useEffect, useState, use } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
-import { useAuth } from '@/contexts/AuthContext'
 import { useT } from '@/contexts/LanguageContext'
 import PostCard from '@/components/PostCard'
 import { DocumentIcon } from '@/components/Icons'
@@ -12,12 +11,10 @@ import type { Post } from '@/types/post'
 export default function PostDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const t = useT()
-  const { user } = useAuth()
   const router = useRouter()
   const [post, setPost] = useState<Post | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
-  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     api.get(`posts/${id}`)
@@ -26,17 +23,6 @@ export default function PostDetailPage({ params }: { params: Promise<{ id: strin
       .catch(() => setNotFound(true))
       .finally(() => setLoading(false))
   }, [id])
-
-  async function handleDelete() {
-    if (!post) return
-    setDeleting(true)
-    try {
-      await api.delete(`posts/${post.id}`)
-      router.push('/feed')
-    } catch {
-      setDeleting(false)
-    }
-  }
 
   if (loading) {
     return (
@@ -56,24 +42,17 @@ export default function PostDetailPage({ params }: { params: Promise<{ id: strin
     )
   }
 
-  const isOwner = user?.id === post.user.id
-
   return (
     <div className="mx-auto max-w-2xl px-4 py-8 sm:px-6">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6">
         <button onClick={() => router.back()} className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition">{t.post.back}</button>
-        {isOwner && (
-          <button
-            onClick={handleDelete}
-            disabled={deleting}
-            className="text-sm text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition disabled:opacity-50"
-          >
-            {deleting ? t.post.deleting : t.post.deletePost}
-          </button>
-        )}
       </div>
 
-      <PostCard post={post} />
+      <PostCard
+        post={post}
+        onUpdate={setPost}
+        onDelete={() => router.push('/feed')}
+      />
     </div>
   )
 }

@@ -15,6 +15,7 @@ import { usersRoutes } from './modules/users/users.routes'
 import { postsRoutes } from './modules/posts/posts.routes'
 import { jamsRoutes } from './modules/jams/jams.routes'
 import { notificationsRoutes } from './modules/notifications/notifications.routes'
+import { adminRoutes } from './modules/admin/admin.routes'
 
 const ERROR_MAP: Record<string, { statusCode: number; message: string }> = {
   EMAIL_TAKEN:            { statusCode: 409, message: 'Email already in use' },
@@ -112,6 +113,7 @@ export function buildApp() {
   app.register(postsRoutes, { prefix: '/posts' })
   app.register(jamsRoutes, { prefix: '/jams' })
   app.register(notificationsRoutes, { prefix: '/notifications' })
+  app.register(adminRoutes, { prefix: '/admin' })
 
   app.setErrorHandler((error: FastifyError | ZodError | Error, _request, reply) => {
     if (error instanceof ZodError) {

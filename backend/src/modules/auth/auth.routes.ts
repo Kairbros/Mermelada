@@ -22,10 +22,11 @@ const cookieOptions = {
 
 function safeUser(user: {
   id: string; username: string; displayName: string
-  email: string; avatarUrl: string | null; isVerified: boolean
+  email: string; avatarUrl: string | null; isVerified: boolean; isAdmin?: boolean
 }) {
   return { id: user.id, username: user.username, displayName: user.displayName,
-           email: user.email, avatarUrl: user.avatarUrl, isVerified: user.isVerified }
+           email: user.email, avatarUrl: user.avatarUrl, isVerified: user.isVerified,
+           isAdmin: user.isAdmin ?? false }
 }
 
 export async function authRoutes(app: FastifyInstance) {

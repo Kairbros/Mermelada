@@ -211,7 +211,14 @@ export default function FeedPage() {
         </div>
       ) : (
         <div className="space-y-4">
-          {posts.map(post => <PostCard key={post.id} post={post} />)}
+          {posts.map(post => (
+            <PostCard
+              key={post.id}
+              post={post}
+              onDelete={id => setPosts(prev => prev.filter(p => p.id !== id))}
+              onUpdate={updated => setPosts(prev => prev.map(p => p.id === updated.id ? updated : p))}
+            />
+          ))}
         </div>
       )}
     </div>

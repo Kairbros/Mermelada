@@ -6,7 +6,8 @@ export const createPostSchema = z.object({
 })
 
 export const createCommentSchema = z.object({
-  content: z.string().min(1).max(300)
+  content:  z.string().min(1).max(300),
+  parentId: z.string().optional()
 })
 
 export type CreatePostInput    = z.infer<typeof createPostSchema>

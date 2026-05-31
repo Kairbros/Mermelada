@@ -216,6 +216,29 @@ export async function uploadGameFile(
   })
 }
 
+export async function deleteScreenshot(
+  app: FastifyInstance,
+  slug: string,
+  submissionId: string,
+  screenshotId: string,
+  userId: string
+) {
+  const jam = await app.prisma.jam.findUnique({ where: { slug } })
+  if (!jam) throw new Error('JAM_NOT_FOUND')
+  if (jam.status !== 'IN_PROGRESS') throw new Error('JAM_NOT_IN_PROGRESS')
+
+  const submission = await app.prisma.submission.findUnique({ where: { id: submissionId } })
+  if (!submission || submission.jamId !== jam.id) throw new Error('SUBMISSION_NOT_FOUND')
+  if (submission.userId !== userId) throw new Error('FORBIDDEN')
+
+  const screenshot = await app.prisma.submissionScreenshot.findUnique({ where: { id: screenshotId } })
+  if (!screenshot || screenshot.submissionId !== submissionId) throw new Error('SCREENSHOT_NOT_FOUND')
+
+  const key = screenshot.url.split('/').slice(-4).join('/')
+  await deleteFile(key).catch(() => null)
+  await app.prisma.submissionScreenshot.delete({ where: { id: screenshotId } })
+}
+
 export async function addScreenshot(
   app: FastifyInstance,
   slug: string,

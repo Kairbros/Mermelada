@@ -126,10 +126,13 @@ model PostComment {
   content   String
   userId    String
   postId    String
+  parentId  String?
   createdAt DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post    Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  parent  PostComment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies PostComment[] @relation("CommentReplies")
 }
 
 // ─────────────────────────────────────────────
@@ -264,7 +267,7 @@ model SubmissionScreenshot {
 // ─────────────────────────────────────────────
 // VOTING
 // ─────────────────────────────────────────────
-// vote-for-one: one vote per voter per jam, score 1-10
+// rate-each: one vote (score 1-10) per voter per submission
 // comment validated at API level (max ~125 words)
 // TODO: add VoteCategory when scaling to per-category voting
 
@@ -282,7 +285,9 @@ model Vote {
   submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
   voter      User       @relation(fields: [voterId], references: [id], onDelete: Cascade)
 
-  @@unique([voterId, jamId])
+  // One vote (rating) per voter per submission — voters rate every entry they want.
+  @@unique([voterId, submissionId])
+  @@index([jamId])
 }
 
 // ─────────────────────────────────────────────
@@ -293,6 +298,7 @@ enum NotificationType {
   NEW_FOLLOWER
   POST_LIKE
   POST_COMMENT
+  COMMENT_REPLY
   JAM_STATUS_CHANGED
   JAM_SUBMISSION_RECEIVED
   JAM_VOTING_OPEN

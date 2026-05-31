@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 import { useT } from '@/contexts/LanguageContext'
+import { useNotifications } from '@/contexts/NotificationsContext'
 import Avatar from '@/components/Avatar'
 import {
   BellIcon, HeartIcon, CommentIcon, UserPlusIcon,
@@ -33,6 +34,7 @@ function typeBadge(type: string): { Icon: typeof BellIcon; bg: string } {
     NEW_FOLLOWER:             { Icon: UserPlusIcon,  bg: 'bg-violet-600' },
     POST_LIKE:                { Icon: HeartIcon,     bg: 'bg-rose-600' },
     POST_COMMENT:             { Icon: CommentIcon,   bg: 'bg-sky-600' },
+    COMMENT_REPLY:            { Icon: CommentIcon,   bg: 'bg-indigo-600' },
     JAM_STATUS_CHANGED:       { Icon: GamepadIcon,   bg: 'bg-violet-600' },
     JAM_SUBMISSION_RECEIVED:  { Icon: PackageIcon,   bg: 'bg-emerald-600' },
     JAM_VOTING_OPEN:          { Icon: BallotIcon,    bg: 'bg-amber-600' },
@@ -60,6 +62,13 @@ function describe(type: string, data: Record<string, string>, t: Translations) {
           ? <>{t.notifications.commented} <span className="text-gray-500 dark:text-gray-300">&ldquo;{data.contentPreview}&rdquo;</span></>
           : <>{t.notifications.commentedOn}</>,
       }
+    case 'COMMENT_REPLY':
+      return {
+        actor: { name: data.replierUsername, avatar: data.replierAvatarUrl, username: data.replierUsername },
+        message: data.contentPreview
+          ? <>{t.notifications.repliedToComment} <span className="text-gray-500 dark:text-gray-300">&ldquo;{data.contentPreview}&rdquo;</span></>
+          : <>{t.notifications.repliedToComment}</>,
+      }
     case 'JAM_SUBMISSION_RECEIVED':
       return {
         actor: { name: data.submitterUsername, avatar: data.submitterAvatarUrl, username: data.submitterUsername },
@@ -79,13 +88,14 @@ function describe(type: string, data: Record<string, string>, t: Translations) {
 function notifLink(type: string, data: Record<string, string>) {
   if (type.startsWith('JAM_') && data.jamSlug) return `/jams/${data.jamSlug}`
   if (type === 'NEW_FOLLOWER' && data.followerUsername) return `/users/${data.followerUsername}`
-  if ((type === 'POST_LIKE' || type === 'POST_COMMENT') && data.postId) return `/posts/${data.postId}`
+  if ((type === 'POST_LIKE' || type === 'POST_COMMENT' || type === 'COMMENT_REPLY') && data.postId) return `/posts/${data.postId}`
   return null
 }
 
 export default function NotificationsPage() {
   const t = useT()
   const { user, accessToken, loading: authLoading } = useAuth()
+  const { refresh, setUnread, decrement, markAllRead: ctxMarkAllRead } = useNotifications()
   const router = useRouter()
   const [notifications, setNotifications] = useState<Notification[]>([])
   const [loading, setLoading] = useState(true)
@@ -99,19 +109,24 @@ export default function NotificationsPage() {
     if (!accessToken) return
     api.get('notifications', { headers: { Authorization: `Bearer ${accessToken}` } })
       .json<{ items: Notification[] }>()
-      .then(res => setNotifications(res.items))
+      .then(res => {
+        setNotifications(res.items)
+        // Sync the shared badge with the real unread count on load.
+        setUnread(res.items.filter(n => !n.read).length)
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [accessToken])
+  }, [accessToken, setUnread])
 
   async function markAllRead() {
     if (!accessToken || markingAll) return
     setMarkingAll(true)
+    ctxMarkAllRead()
     try {
       await api.post('notifications/read-all', { headers: { Authorization: `Bearer ${accessToken}` } })
       setNotifications(prev => prev.map(n => ({ ...n, read: true })))
     } catch {
-      // silently fail
+      refresh()
     } finally {
       setMarkingAll(false)
     }
@@ -119,14 +134,19 @@ export default function NotificationsPage() {
 
   function markRead(id: string) {
     if (!accessToken) return
+    const target = notifications.find(n => n.id === id)
+    if (!target || target.read) return
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n))
-    api.patch(`notifications/${id}/read`, { headers: { Authorization: `Bearer ${accessToken}` } }).catch(() => {})
+    decrement()
+    api.patch(`notifications/${id}/read`, { headers: { Authorization: `Bearer ${accessToken}` } }).catch(() => refresh())
   }
 
   function deleteNotif(id: string) {
     if (!accessToken) return
+    const target = notifications.find(n => n.id === id)
     setNotifications(prev => prev.filter(n => n.id !== id))
-    api.delete(`notifications/${id}`, { headers: { Authorization: `Bearer ${accessToken}` } }).catch(() => {})
+    if (target && !target.read) decrement()
+    api.delete(`notifications/${id}`, { headers: { Authorization: `Bearer ${accessToken}` } }).catch(() => refresh())
   }
 
   const unread = notifications.filter(n => !n.read).length

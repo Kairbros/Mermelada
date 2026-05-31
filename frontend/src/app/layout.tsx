@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono } from 'next/font/google'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import { LanguageProvider } from '@/contexts/LanguageContext'
+import { NotificationsProvider } from '@/contexts/NotificationsContext'
 import Navbar from '@/components/Navbar'
 import './globals.css'
 
@@ -26,8 +27,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <LanguageProvider>
           <ThemeProvider>
             <AuthProvider>
-              <Navbar />
-              {children}
+              <NotificationsProvider>
+                <Navbar />
+                {children}
+              </NotificationsProvider>
             </AuthProvider>
           </ThemeProvider>
         </LanguageProvider>

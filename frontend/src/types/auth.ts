@@ -5,6 +5,7 @@ export interface User {
   email: string
   avatarUrl: string | null
   isVerified: boolean
+  isAdmin?: boolean
 }
 
 export interface AuthResponse {

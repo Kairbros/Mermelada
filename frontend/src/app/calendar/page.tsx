@@ -74,19 +74,19 @@ export default function CalendarPage() {
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <CalendarIcon className="h-5 w-5 text-violet-400" />
-          <h1 className="text-lg font-bold text-white">{t.calendar.title}</h1>
+          <h1 className="text-lg font-bold text-gray-900 dark:text-white">{t.calendar.title}</h1>
         </div>
         <div className="flex w-full items-center justify-between sm:w-auto sm:justify-start sm:gap-2">
           <button onClick={prevMonth} className="btn-ghost py-1.5" aria-label="Previous month">←</button>
-          <span className="font-mono text-sm font-semibold text-white">{monthName} {year}</span>
+          <span className="font-mono text-sm font-semibold text-gray-900 dark:text-white">{monthName} {year}</span>
           <button onClick={nextMonth} className="btn-ghost py-1.5" aria-label="Next month">→</button>
         </div>
       </div>
 
       {loading ? (
-        <div className="h-80 animate-pulse rounded-2xl bg-gray-800/60" />
+        <div className="h-80 animate-pulse rounded-2xl bg-gray-200 dark:bg-gray-800/60" />
       ) : bars.length === 0 ? (
-        <div className="border border-gray-800 bg-gray-900/50 py-20 text-center font-mono text-sm text-gray-600">
+        <div className="border border-gray-200 bg-gray-50 py-20 text-center font-mono text-sm text-gray-500 dark:border-gray-800 dark:bg-gray-900/50 dark:text-gray-600">
           {t.calendar.noJams(monthName, year)}
         </div>
       ) : (
@@ -144,14 +144,14 @@ export default function CalendarPage() {
                 <button
                   key={jam.id}
                   onClick={() => router.push(`/jams/${jam.slug}`)}
-                  className="card-hover flex w-full items-stretch gap-0 overflow-hidden border border-gray-800 bg-gray-900 text-left"
+                  className="card-hover flex w-full items-stretch gap-0 overflow-hidden border border-gray-200 bg-white text-left dark:border-gray-800 dark:bg-gray-900"
                 >
                   <span className={`w-1 shrink-0 ${barColor(jam.id)}`} />
                   <div className="min-w-0 flex-1 px-3 py-3">
-                    <p className="truncate font-semibold text-white">{jam.title}</p>
+                    <p className="truncate font-semibold text-gray-900 dark:text-white">{jam.title}</p>
                     <div className="mt-1 flex items-center gap-2 font-mono text-[11px] text-gray-500">
                       <span>{fmt(jam.startAt)} → {fmt(jam.votingEndAt)}</span>
-                      <span className="text-gray-700">·</span>
+                      <span className="text-gray-300 dark:text-gray-700">·</span>
                       <span>{jam._count.participants} joined</span>
                     </div>
                   </div>

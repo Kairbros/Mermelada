@@ -54,6 +54,13 @@ export async function getPost(app: FastifyInstance, postId: string, viewerId?: s
   return withLiked(post, viewerId, app)
 }
 
+export async function updatePost(app: FastifyInstance, postId: string, userId: string, content: string) {
+  const post = await app.prisma.post.findUnique({ where: { id: postId } })
+  if (!post) throw new Error('POST_NOT_FOUND')
+  if (post.userId !== userId) throw new Error('FORBIDDEN')
+  return app.prisma.post.update({ where: { id: postId }, data: { content }, select: postSelect })
+}
+
 export async function deletePost(app: FastifyInstance, postId: string, userId: string) {
   const post = await app.prisma.post.findUnique({ where: { id: postId }, include: { images: true } })
   if (!post) throw new Error('POST_NOT_FOUND')
@@ -135,6 +142,11 @@ export async function unlikePost(app: FastifyInstance, postId: string, userId: s
   await app.prisma.postLike.deleteMany({ where: { userId, postId } })
 }
 
+const commentSelect = {
+  id: true, content: true, createdAt: true, parentId: true,
+  user: { select: { id: true, username: true, displayName: true, avatarUrl: true, isVerified: true } }
+}
+
 export async function createComment(
   app: FastifyInstance,
   postId: string,
@@ -144,22 +156,57 @@ export async function createComment(
   const post = await app.prisma.post.findUnique({ where: { id: postId } })
   if (!post) throw new Error('POST_NOT_FOUND')
 
+  if (input.parentId) {
+    const parent = await app.prisma.postComment.findUnique({ where: { id: input.parentId } })
+    if (!parent || parent.postId !== postId) throw new Error('COMMENT_NOT_FOUND')
+    if (parent.parentId) throw new Error('NESTED_REPLY_NOT_ALLOWED')
+  }
+
   const comment = await app.prisma.postComment.create({
-    data: { content: input.content, postId, userId },
-    select: {
-      id: true, content: true, createdAt: true,
-      user: { select: { id: true, username: true, displayName: true, avatarUrl: true, isVerified: true } }
-    }
+    data: { content: input.content, postId, userId, parentId: input.parentId ?? null },
+    select: { ...commentSelect, replies: { select: commentSelect, orderBy: { createdAt: 'asc' as const } } }
   })
 
-  if (post.userId !== userId) {
+  const replier = await app.prisma.user.findUnique({
+    where: { id: userId },
+    select: { username: true, avatarUrl: true }
+  })
+
+  if (input.parentId) {
+    // Notify parent comment author (if not self)
+    const parent = await app.prisma.postComment.findUnique({ where: { id: input.parentId }, select: { userId: true } })
+    if (parent && parent.userId !== userId) {
+      await notify(app.prisma, parent.userId, {
+        type: 'COMMENT_REPLY',
+        postId,
+        commentId: input.parentId,
+        replyId: comment.id,
+        replierId: userId,
+        replierUsername: replier!.username,
+        replierAvatarUrl: replier!.avatarUrl,
+        contentPreview: input.content.slice(0, 100)
+      }).catch(() => null)
+    }
+    // Notify post owner too (if different from replier and parent comment author)
+    if (post.userId !== userId && post.userId !== (parent?.userId ?? '')) {
+      await notify(app.prisma, post.userId, {
+        type: 'POST_COMMENT',
+        postId,
+        commentId: comment.id,
+        commenterId: userId,
+        commenterUsername: replier!.username,
+        commenterAvatarUrl: replier!.avatarUrl,
+        contentPreview: input.content.slice(0, 100)
+      }).catch(() => null)
+    }
+  } else if (post.userId !== userId) {
     await notify(app.prisma, post.userId, {
       type: 'POST_COMMENT',
       postId,
       commentId: comment.id,
       commenterId: userId,
-      commenterUsername: comment.user.username,
-      commenterAvatarUrl: comment.user.avatarUrl,
+      commenterUsername: replier!.username,
+      commenterAvatarUrl: replier!.avatarUrl,
       contentPreview: input.content.slice(0, 100)
     }).catch(() => null)
   }
@@ -172,13 +219,13 @@ export async function getComments(app: FastifyInstance, postId: string, cursor?:
   if (!post) throw new Error('POST_NOT_FOUND')
 
   const comments = await app.prisma.postComment.findMany({
-    where: { postId },
+    where: { postId, parentId: null },
     take: PAGE_SIZE + 1,
     ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
     orderBy: { createdAt: 'asc' },
     select: {
-      id: true, content: true, createdAt: true,
-      user: { select: { id: true, username: true, displayName: true, avatarUrl: true, isVerified: true } }
+      ...commentSelect,
+      replies: { select: commentSelect, orderBy: { createdAt: 'asc' as const } }
     }
   })
 
@@ -187,10 +234,14 @@ export async function getComments(app: FastifyInstance, postId: string, cursor?:
   return { items, nextCursor: hasMore ? items[items.length - 1].id : null }
 }
 
-export async function deleteComment(app: FastifyInstance, commentId: string, userId: string) {
+export async function deleteComment(app: FastifyInstance, commentId: string, userId: string, postId: string) {
   const comment = await app.prisma.postComment.findUnique({ where: { id: commentId } })
   if (!comment) throw new Error('COMMENT_NOT_FOUND')
-  if (comment.userId !== userId) throw new Error('FORBIDDEN')
+  const post = await app.prisma.post.findUnique({ where: { id: postId }, select: { userId: true } })
+  if (!post) throw new Error('POST_NOT_FOUND')
+  const isCommentOwner = comment.userId === userId
+  const isPostOwner = post.userId === userId
+  if (!isCommentOwner && !isPostOwner) throw new Error('FORBIDDEN')
   await app.prisma.postComment.delete({ where: { id: commentId } })
 }
 

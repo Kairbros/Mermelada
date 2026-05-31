@@ -28,7 +28,9 @@ export interface Comment {
   id: string
   content: string
   createdAt: string
+  parentId?: string | null
   user: PostUser
+  replies?: Comment[]
 }
 
 // Lightweight user shape returned by search / followers / following endpoints
