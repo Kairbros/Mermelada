@@ -872,8 +872,10 @@ export default function JamPage({ params }: { params: Promise<{ slug: string }> 
                 {mySubmission && !['VOTING', 'CLOSED'].includes(jam.status) && (
                   <div className="rounded-xl border border-violet-500/30 bg-violet-500/5 p-4">
                     <div className="flex items-center justify-between gap-2 mb-3">
-                      <span className="text-xs font-medium text-violet-400 uppercase tracking-wider">{t.jamDetail.yourSubmission}</span>
-                      {jam.status === 'IN_PROGRESS' && mySubmission.user.id === user?.id && !showEditSub && (
+                      <span className="text-xs font-medium text-violet-400 uppercase tracking-wider">
+                        {mySubmission.team ? `${t.jamDetail.yourSubmission} · ${mySubmission.team.name}` : t.jamDetail.yourSubmission}
+                      </span>
+                      {jam.status === 'IN_PROGRESS' && (mySubmission.user.id === user?.id || (!!mySubmission.team && mySubmission.team.id === myTeamId)) && !showEditSub && (
                         <div className="flex gap-2">
                           <button onClick={openEditSub}
                             className="rounded-lg border border-gray-700 px-3 py-1 text-xs text-gray-300 hover:border-violet-500 hover:text-white transition">
@@ -1351,7 +1353,7 @@ function TimelineItem({ label, date }: { label: string; date: string }) {
       <div>
         <p className="text-xs text-gray-500">{label}</p>
         <p className={`text-sm font-medium ${isPast ? 'text-gray-400 line-through dark:text-gray-500' : 'text-gray-800 dark:text-gray-200'}`}>
-          {new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+          {new Date(date).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
         </p>
       </div>
     </div>

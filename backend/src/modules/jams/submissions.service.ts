@@ -18,6 +18,33 @@ const submissionSelect = {
   _count: { select: { votes: true } }
 }
 
+// A submission may be managed by its creator, or — if it belongs to a team — by
+// any current member of that team. Returns the submission or throws.
+async function loadManageableSubmission(
+  app: FastifyInstance,
+  submissionId: string,
+  jamId: string,
+  userId: string
+) {
+  const submission = await app.prisma.submission.findUnique({
+    where: { id: submissionId },
+    include: { screenshots: true }
+  })
+  if (!submission || submission.jamId !== jamId) throw new Error('SUBMISSION_NOT_FOUND')
+
+  if (submission.userId === userId) return submission
+
+  // Team submission: allow any teammate to manage it.
+  if (submission.teamId) {
+    const participation = await app.prisma.jamParticipation.findUnique({
+      where: { userId_jamId: { userId, jamId } }
+    })
+    if (participation?.teamId && participation.teamId === submission.teamId) return submission
+  }
+
+  throw new Error('FORBIDDEN')
+}
+
 export async function createSubmission(
   app: FastifyInstance,
   slug: string,
@@ -33,6 +60,19 @@ export async function createSubmission(
   })
   if (!participation) throw new Error('NOT_PARTICIPATING')
   if (jam.teamMode === 'TEAMS_ONLY' && !participation.teamId) throw new Error('TEAM_REQUIRED')
+
+  // One submission per user, and one per team — give a clear error instead of a raw
+  // unique-constraint (P2002) when a teammate already submitted for the team.
+  const existing = await app.prisma.submission.findFirst({
+    where: {
+      jamId: jam.id,
+      OR: [
+        { userId },
+        ...(participation.teamId ? [{ teamId: participation.teamId }] : [])
+      ]
+    }
+  })
+  if (existing) throw new Error('ALREADY_SUBMITTED')
 
   const submitter = await app.prisma.user.findUnique({ where: { id: userId }, select: { username: true, avatarUrl: true } })
 
@@ -141,9 +181,7 @@ export async function updateSubmission(
   if (!jam) throw new Error('JAM_NOT_FOUND')
   if (jam.status !== 'IN_PROGRESS') throw new Error('JAM_NOT_IN_PROGRESS')
 
-  const submission = await app.prisma.submission.findUnique({ where: { id: submissionId } })
-  if (!submission || submission.jamId !== jam.id) throw new Error('SUBMISSION_NOT_FOUND')
-  if (submission.userId !== userId) throw new Error('FORBIDDEN')
+  await loadManageableSubmission(app, submissionId, jam.id, userId)
 
   return app.prisma.submission.update({
     where: { id: submissionId },
@@ -162,12 +200,7 @@ export async function deleteSubmission(
   if (!jam) throw new Error('JAM_NOT_FOUND')
   if (jam.status !== 'IN_PROGRESS') throw new Error('JAM_NOT_IN_PROGRESS')
 
-  const submission = await app.prisma.submission.findUnique({
-    where: { id: submissionId },
-    include: { screenshots: true }
-  })
-  if (!submission || submission.jamId !== jam.id) throw new Error('SUBMISSION_NOT_FOUND')
-  if (submission.userId !== userId) throw new Error('FORBIDDEN')
+  const submission = await loadManageableSubmission(app, submissionId, jam.id, userId)
 
   // Delete files from MinIO
   const deleteOps: Promise<void>[] = []
@@ -195,9 +228,7 @@ export async function uploadGameFile(
   if (!jam) throw new Error('JAM_NOT_FOUND')
   if (jam.status !== 'IN_PROGRESS') throw new Error('JAM_NOT_IN_PROGRESS')
 
-  const submission = await app.prisma.submission.findUnique({ where: { id: submissionId } })
-  if (!submission || submission.jamId !== jam.id) throw new Error('SUBMISSION_NOT_FOUND')
-  if (submission.userId !== userId) throw new Error('FORBIDDEN')
+  const submission = await loadManageableSubmission(app, submissionId, jam.id, userId)
 
   // Remove old file if one exists
   if (submission.fileUrl) {
@@ -227,9 +258,7 @@ export async function deleteScreenshot(
   if (!jam) throw new Error('JAM_NOT_FOUND')
   if (jam.status !== 'IN_PROGRESS') throw new Error('JAM_NOT_IN_PROGRESS')
 
-  const submission = await app.prisma.submission.findUnique({ where: { id: submissionId } })
-  if (!submission || submission.jamId !== jam.id) throw new Error('SUBMISSION_NOT_FOUND')
-  if (submission.userId !== userId) throw new Error('FORBIDDEN')
+  await loadManageableSubmission(app, submissionId, jam.id, userId)
 
   const screenshot = await app.prisma.submissionScreenshot.findUnique({ where: { id: screenshotId } })
   if (!screenshot || screenshot.submissionId !== submissionId) throw new Error('SCREENSHOT_NOT_FOUND')
@@ -250,12 +279,7 @@ export async function addScreenshot(
   if (!jam) throw new Error('JAM_NOT_FOUND')
   if (jam.status !== 'IN_PROGRESS') throw new Error('JAM_NOT_IN_PROGRESS')
 
-  const submission = await app.prisma.submission.findUnique({
-    where: { id: submissionId },
-    include: { screenshots: true }
-  })
-  if (!submission || submission.jamId !== jam.id) throw new Error('SUBMISSION_NOT_FOUND')
-  if (submission.userId !== userId) throw new Error('FORBIDDEN')
+  const submission = await loadManageableSubmission(app, submissionId, jam.id, userId)
   if (submission.screenshots.length >= MAX_SCREENSHOTS) throw new Error('TOO_MANY_SCREENSHOTS')
   if (!ALLOWED_IMAGE_TYPES.includes(file.mimetype)) throw new Error('INVALID_FILE_TYPE')
 

@@ -1,307 +1,167 @@
 # Backend — Contexto y Arquitectura
 
-## Stack tecnológico
+> Doc de orientación para retomar el proyecto sin releer todo el código. Si algo aquí
+> contradice al código, gana el código (verifica antes de asumir).
+
+## Stack
 
 | Capa | Tecnología |
 |------|-----------|
-| Framework HTTP | Fastify 4.x + TypeScript |
+| HTTP | Fastify 4.x + TypeScript |
 | ORM | Prisma + PostgreSQL |
-| Autenticación | JWT (`@fastify/jwt`) + refresh token en httpOnly cookie |
-| Colas de trabajo | BullMQ + Redis (ioredis) |
-| Almacenamiento de archivos | MinIO (S3-compatible) |
+| Auth | JWT (`@fastify/jwt`) + refresh token en cookie httpOnly |
+| Colas | BullMQ + Redis (ioredis) |
+| Archivos | MinIO (S3-compatible) |
 | Emails | Resend |
-| Validación | Zod (servicios) + AJV (rutas Fastify) |
-| Documentación API | Swagger UI en `/docs` (`@fastify/swagger`) |
+| Validación | Zod (servicios) + AJV/JSON-schema (rutas Fastify) |
+| Docs API | Swagger UI en `/docs` |
 
-**Puerto:** 4000  
-**Entrada:** `backend/src/server.ts` → registra plugins, inicia buckets MinIO, arranca worker BullMQ  
-**App:** `backend/src/app.ts` → configura CORS, rate-limit (100 req/min), multipart, error handler global, registra rutas
+**Puerto:** 4000 · **Entrada:** `src/server.ts` → registra plugins, crea bucket MinIO, arranca worker BullMQ · **App:** `src/app.ts` → CORS, rate-limit (100/min), multipart (límite 2 GB), error handler global (`ERROR_MAP` mapea `throw new Error('CODE')` → status+mensaje), registra módulos.
+
+**Importante (despliegue):** backend y frontend usan `build:` en docker-compose. Tras `git pull` hay que `docker compose up -d --build` (NO basta `restart`). El Dockerfile corre `prisma migrate deploy` al arrancar → los cambios de schema deben existir como **migración Prisma** (no sólo `db push` local), o no se aplican en prod.
 
 ---
 
-## Estructura de carpetas
+## Estructura
 
 ```
 backend/src/
-├── server.ts
-├── app.ts
+├── server.ts, app.ts, seed-admin.ts   ← seed-admin se compila a dist/ (correr: node dist/seed-admin.js)
 ├── modules/
-│   ├── auth/
-│   │   ├── auth.routes.ts
-│   │   ├── auth.service.ts
-│   │   └── auth.schema.ts
-│   ├── users/
-│   │   ├── users.routes.ts
-│   │   ├── users.service.ts
-│   │   ├── follow.service.ts
-│   │   └── users.schema.ts
-│   ├── posts/
-│   │   ├── posts.routes.ts
-│   │   ├── posts.service.ts
-│   │   └── posts.schema.ts
-│   ├── jams/
-│   │   ├── jams.routes.ts
-│   │   ├── jams.service.ts
-│   │   ├── participation.service.ts
-│   │   ├── submissions.service.ts
-│   │   ├── votes.service.ts
-│   │   └── *.schema.ts
-│   └── notifications/
-│       ├── notifications.routes.ts
-│       ├── notifications.service.ts
-│       └── notifications.schema.ts
+│   ├── auth/        (routes, service, schema)
+│   ├── users/       (routes, service, follow.service, schema)
+│   ├── posts/       (routes, service, schema)
+│   ├── jams/        (routes, service, participation.service, submissions.service, votes.service, *.schema)
+│   ├── notifications/ (routes, service, schema)
+│   └── admin/       (routes, service)   ← moderación
 ├── plugins/
-│   ├── prisma.ts       → app.prisma
-│   ├── redis.ts        → app.redis
-│   └── jwt.ts          → app.authenticate()
+│   ├── prisma.ts → app.prisma
+│   ├── redis.ts  → app.redis
+│   └── jwt.ts    → app.authenticate (JWT) + app.requireAdmin (JWT + isAdmin vivo en DB)
 └── lib/
-    ├── storage.ts      → uploadFile(), uploadStream(), deleteFile() (MinIO)
-    ├── queue.ts        → programa jobs de transición de jam
-    ├── worker.ts       → ejecuta los jobs (BullMQ)
-    ├── notifications.ts → helper createNotification()
-    ├── mailer.ts       → wrapper Resend
-    └── swagger-schemas.ts
+    ├── storage.ts       → uploadFile() buffered, uploadStream() 2GB, deleteFile() (MinIO)
+    ├── queue.ts         → scheduleJamTransition(), jamJobId()  [IDs usan "__" no ":"]
+    ├── worker.ts        → ejecuta jobs BullMQ (reveal-theme, open-voting, close-jam)
+    ├── notifications.ts  → notify(), notifyMany()  + tipos de payload
+    ├── mailer.ts        → wrapper Resend
+    └── swagger-schemas.ts → schemas reutilizables de respuesta (¡el serializador recorta campos no declarados!)
 ```
+
+> ⚠️ **Gotcha de Fastify:** las respuestas se serializan con `fast-json-stringify` según el `response` schema. Si añades un campo al servicio pero no al schema en `swagger-schemas.ts` (o inline en la ruta), **se borra antes de enviarse**. Pasó con `replies`/`parentId` en comentarios.
 
 ---
 
 ## Endpoints
 
-### Auth — `/auth`
+### Auth `/auth`
+`POST /register` · `POST /login` · `POST /refresh` (cookie) · `POST /logout` · `GET /verify-email?token=` · `POST /forgot-password` · `POST /reset-password`
+Login/refresh devuelven `{ accessToken, user }` donde `user` incluye `isAdmin`.
 
-| Método | Ruta | Auth | Descripción |
-|--------|------|------|-------------|
-| POST | `/auth/register` | — | Crear cuenta, envía email de verificación |
-| POST | `/auth/login` | — | Login → JWT + refresh cookie |
-| POST | `/auth/refresh` | cookie | Renovar access token |
-| POST | `/auth/logout` | cookie | Eliminar refresh token |
-| GET | `/auth/verify-email` | — | Verificar email con `?token=` |
-| POST | `/auth/forgot-password` | — | Enviar email de reset |
-| POST | `/auth/reset-password` | — | Cambiar contraseña con token |
+### Users `/users`
+`GET /search?q=&cursor=` · `GET /me` ✓ · `PATCH /me` ✓ · `POST|DELETE /me/avatar` ✓ · `POST /me/banner` ✓ · `GET /:username` · `POST|DELETE /:username/follow` ✓ · `GET /:username/followers|following|posts|jams` (`?cursor=`)
 
-### Users — `/users`
+### Posts `/posts`
+`POST /` ✓ · `POST /:id/images` ✓ (máx 4, 10MB) · `GET /feed` ✓ · `GET /:id` · `PATCH /:id` ✓ (editar, solo autor) · `DELETE /:id` ✓ (autor) · `POST|DELETE /:id/like` ✓ · `GET /:id/comments` · `POST /:id/comments` ✓ (acepta `parentId` para responder, 1 nivel) · `DELETE /:id/comments/:commentId` ✓ (autor del comentario **o** dueño del post)
 
-| Método | Ruta | Auth | Descripción |
-|--------|------|------|-------------|
-| GET | `/users/search` | — | Buscar usuarios (`?q=&cursor=`) |
-| GET | `/users/me` | ✓ | Mi perfil |
-| PATCH | `/users/me` | ✓ | Actualizar perfil |
-| POST | `/users/me/avatar` | ✓ | Subir avatar (multipart, 5 MB) |
-| DELETE | `/users/me/avatar` | ✓ | Eliminar avatar |
-| POST | `/users/me/banner` | ✓ | Subir banner (multipart, 10 MB) |
-| GET | `/users/:username` | — | Perfil público |
-| POST | `/users/:username/follow` | ✓ | Seguir usuario |
-| DELETE | `/users/:username/follow` | ✓ | Dejar de seguir |
-| GET | `/users/:username/followers` | — | Listar seguidores (`?cursor=`) |
-| GET | `/users/:username/following` | — | Listar seguidos (`?cursor=`) |
-| GET | `/users/:username/posts` | — | Posts del usuario (`?cursor=`) |
-| GET | `/users/:username/jams` | — | Jams organizados (`?cursor=`) |
+### Jams `/jams`
+`GET /` (`?status=&q=&cursor=`) · `POST /` ✓ · `GET /calendar?month=&year=` · `GET /:slug` · `PATCH /:slug` ✓ (solo DRAFT) · `DELETE /:slug` ✓ (solo DRAFT) · `POST /:slug/publish` ✓ · `POST /:slug/cancel` ✓ · **`POST /:slug/advance` ✓** (organizer avanza fase manualmente: OPEN→IN_PROGRESS→VOTING→CLOSED) · `POST /:slug/cover` ✓
 
-### Posts — `/posts`
+**Participación:** `POST|DELETE /:slug/join` ✓ · `GET /:slug/participants` · `POST /:slug/teams` ✓ · `GET /:slug/teams` · `POST|DELETE /:slug/teams/:teamId/join` ✓
 
-| Método | Ruta | Auth | Descripción |
-|--------|------|------|-------------|
-| POST | `/posts` | ✓ | Crear post |
-| POST | `/posts/:id/images` | ✓ | Subir imágenes (máx 4, 10 MB c/u) |
-| GET | `/posts/feed` | ✓ | Feed (seguidos + propios, `?cursor=`) |
-| GET | `/posts/:id` | — | Obtener post |
-| DELETE | `/posts/:id` | ✓ | Eliminar post (solo autor) |
-| POST | `/posts/:id/like` | ✓ | Dar like |
-| DELETE | `/posts/:id/like` | ✓ | Quitar like |
-| GET | `/posts/:id/comments` | — | Listar comentarios (`?cursor=`) |
-| POST | `/posts/:id/comments` | ✓ | Agregar comentario |
-| DELETE | `/posts/:id/comments/:commentId` | ✓ | Eliminar comentario |
+**Submissions:** `POST /:slug/submissions` ✓ (requiere participar, jam IN_PROGRESS) · `GET /:slug/submissions` (privadas hasta VOTING; organizer las ve siempre) · `GET /:slug/submissions/:id` · `PATCH|DELETE /:slug/submissions/:id` ✓ (solo IN_PROGRESS, dueño) · `POST /:slug/submissions/:id/file` ✓ (2GB streaming) · `POST /:slug/submissions/:id/screenshots` ✓ (máx 5, JPEG/PNG/WebP) · **`DELETE /:slug/submissions/:id/screenshots/:screenshotId` ✓**
 
-### Jams — `/jams`
+**Voting** (modelo *rate-each*, NO un voto por jam):
+`POST /:slug/votes` ✓ (califica una entrega 1-10; **upsert** crea/actualiza; participantes **y organizer** pueden votar; no la propia ni la del propio equipo) · `DELETE /:slug/votes/:submissionId` ✓ (quita esa calificación) · `GET /:slug/votes/me` ✓ (devuelve `{ items: [{submissionId, score, comment}] }`) · `GET /:slug/results` (solo CLOSED; ranking por avgScore)
 
-| Método | Ruta | Auth | Descripción |
-|--------|------|------|-------------|
-| GET | `/jams` | — | Listar jams (`?status=&q=&cursor=`) |
-| POST | `/jams` | ✓ | Crear jam (estado inicial: DRAFT) |
-| GET | `/jams/calendar` | — | Vista calendario (`?month=&year=`) |
-| GET | `/jams/:slug` | — | Detalles del jam |
-| PATCH | `/jams/:slug` | ✓ | Editar jam (solo en DRAFT) |
-| DELETE | `/jams/:slug` | ✓ | Eliminar jam (solo en DRAFT) |
-| POST | `/jams/:slug/publish` | ✓ | Publicar jam (DRAFT → OPEN), programa jobs |
-| POST | `/jams/:slug/cancel` | ✓ | Cancelar jam (→ CLOSED) |
-| POST | `/jams/:slug/cover` | ✓ | Subir portada (5 MB, posición vertical) |
+### Notifications `/notifications`
+`GET /?unread=&cursor=` ✓ · `GET /unread-count` ✓ · `POST /read-all` ✓ · `PATCH /:id/read` ✓ · `DELETE /:id` ✓
 
-### Participación en Jams
-
-| Método | Ruta | Auth | Descripción |
-|--------|------|------|-------------|
-| POST | `/jams/:slug/join` | ✓ | Unirse al jam |
-| DELETE | `/jams/:slug/join` | ✓ | Abandonar el jam |
-| GET | `/jams/:slug/participants` | — | Listar participantes (`?cursor=`) |
-| POST | `/jams/:slug/teams` | ✓ | Crear equipo |
-| GET | `/jams/:slug/teams` | — | Listar equipos (`?cursor=`) |
-| POST | `/jams/:slug/teams/:teamId/join` | ✓ | Unirse a equipo |
-| DELETE | `/jams/:slug/teams/:teamId/join` | ✓ | Abandonar equipo |
-
-### Submissions
-
-| Método | Ruta | Auth | Descripción |
-|--------|------|------|-------------|
-| POST | `/jams/:slug/submissions` | ✓ | Crear submission (requiere estar en jam) |
-| GET | `/jams/:slug/submissions` | — | Listar submissions (`?cursor=`; privadas hasta VOTING) |
-| GET | `/jams/:slug/submissions/:id` | — | Obtener submission |
-| PATCH | `/jams/:slug/submissions/:id` | ✓ | Editar submission (solo IN_PROGRESS) |
-| DELETE | `/jams/:slug/submissions/:id` | ✓ | Eliminar submission (solo IN_PROGRESS) |
-| POST | `/jams/:slug/submissions/:id/file` | ✓ | Subir archivo del juego (hasta 2 GB, streaming) |
-| POST | `/jams/:slug/submissions/:id/screenshots` | ✓ | Subir screenshot (máx 5, 10 MB c/u) |
-
-### Voting
-
-| Método | Ruta | Auth | Descripción |
-|--------|------|------|-------------|
-| POST | `/jams/:slug/votes` | ✓ | Votar (score 1-10, 1 voto por jam) |
-| PATCH | `/jams/:slug/votes` | ✓ | Actualizar voto |
-| DELETE | `/jams/:slug/votes` | ✓ | Retirar voto |
-| GET | `/jams/:slug/votes/me` | ✓ | Mi voto en este jam |
-| GET | `/jams/:slug/results` | — | Resultados (solo cuando CLOSED) |
-
-### Notifications — `/notifications`
-
-| Método | Ruta | Auth | Descripción |
-|--------|------|------|-------------|
-| GET | `/notifications` | ✓ | Listar (`?unread=&cursor=`) |
-| GET | `/notifications/unread-count` | ✓ | Contar no leídas |
-| POST | `/notifications/read-all` | ✓ | Marcar todas como leídas |
-| PATCH | `/notifications/:id/read` | ✓ | Marcar una como leída |
-| DELETE | `/notifications/:id` | ✓ | Eliminar notificación |
+### Admin `/admin` (todas requieren `app.requireAdmin`)
+`GET /stats` (counts) · `GET /posts?cursor=` · `GET /comments?cursor=` · `DELETE /posts/:id` · `DELETE /comments/:id`  (borrado sin chequeo de propiedad)
 
 ### Otros
-
-| Método | Ruta | Descripción |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-| GET | `/docs` | Swagger UI |
+`GET /health` · `GET /docs`
 
 ---
 
-## Autenticación
-
-- **Access token:** JWT con payload `{ sub: userId, email }`, duración ~15 min, enviado en header `Authorization: Bearer <token>`
-- **Refresh token:** httpOnly cookie, duración 30 días, almacenado en tabla `RefreshToken`
-- `app.authenticate` es el hook Fastify que protege rutas privadas
+## Auth
+- **Access token:** JWT `{ sub: userId, email }`, ~15 min, header `Authorization: Bearer`.
+- **Refresh token:** cookie httpOnly, 30 días, tabla `RefreshToken`.
+- `app.authenticate` protege rutas privadas. `app.requireAdmin` = JWT válido + `isAdmin` consultado **en vivo en DB** (revocar admin es inmediato).
+- **Crear admin:** `node dist/seed-admin.js` en prod / `npm run seed:admin` en local. Env: `ADMIN_EMAIL/PASSWORD/USERNAME/DISPLAY_NAME`. Si el email ya existe lo promueve; si no, crea usuario verificado admin.
 
 ---
 
 ## Ciclo de vida de un Jam
 
 ```
-DRAFT → OPEN → IN_PROGRESS → SUBMISSIONS → VOTING → CLOSED
+DRAFT → OPEN → IN_PROGRESS → VOTING → CLOSED
 ```
+(El enum tiene `SUBMISSIONS` pero **no se usa en la práctica**: el flujo salta IN_PROGRESS→VOTING. Subir archivos ocurre en IN_PROGRESS.)
 
-| Estado | Quién lo activa | Qué ocurre |
-|--------|----------------|-----------|
-| DRAFT | Organizer al crear | Editable, no visible públicamente |
-| OPEN | `POST /jams/:slug/publish` | Visible; tema oculto; se programan todos los jobs BullMQ |
-| IN_PROGRESS | Job `reveal-theme` en `startAt` | Tema revelado; participantes se unen y forman equipos |
-| SUBMISSIONS | Job `open-submissions` en `submissionsEndAt` | Ventana de envío de submissions |
-| VOTING | Job `open-voting` en `votingEndAt` | Todos los participantes pueden votar (excepto a sí mismos) |
-| CLOSED | Job `close-jam` al terminar votación | Resultados públicos |
+| Estado | Lo activa | Qué pasa |
+|--------|-----------|----------|
+| DRAFT | crear | editable, privado |
+| OPEN | `publish` | visible, tema oculto, programa jobs BullMQ |
+| IN_PROGRESS | job `reveal-theme` (startAt) **o** `advance` | tema revelado; se une gente, crea equipos, **sube entregas** |
+| VOTING | job `open-voting` (submissionsEndAt) **o** `advance` | todos califican cada entrega (no la propia); organizer también |
+| CLOSED | job `close-jam` (votingEndAt) **o** `advance`/`cancel` | resultados públicos |
 
-El organizer puede cancelar el jam en cualquier momento → `CLOSED`.
+Doble mecanismo: **jobs automáticos** (BullMQ, al publicar) **+ botón manual** del organizer (`/advance`), que además elimina el job redundante. `cancel` → CLOSED en cualquier momento.
 
 ---
 
-## Modelos principales (Prisma)
+## Modelos Prisma (clave)
 
-### User
-```
-id, username (unique), email (unique), passwordHash
-displayName, bio, avatarUrl, bannerUrl
-websiteUrl, githubUrl, itchUrl, twitterUrl
-isVerified, isBanned, isAdmin
-```
-
-### Jam
-```
-id, slug (unique), title, description, rules
-organizerId (→ User)
-status: DRAFT | OPEN | IN_PROGRESS | SUBMISSIONS | VOTING | CLOSED
-theme (oculto hasta IN_PROGRESS), themeRevealed
-teamMode: SOLO_ONLY | TEAMS_OPTIONAL | TEAMS_ONLY
-maxParticipants, maxTeamSize
-coverUrl, coverPosition
-startAt, submissionsEndAt, votingEndAt
-```
-
-### JamParticipation
-```
-userId, jamId, teamId (opcional)
-@@unique([userId, jamId])
-```
-
-### Submission
-```
-id, jamId, userId, teamId (optional, unique per jam)
-title, description
-fileUrl, fileSizeBytes, externalUrl
-```
-
-### Vote
-```
-id, jamId, submissionId, voterId
-score (1–10), comment
-@@unique([voterId, jamId])   ← un voto por participante por jam
-```
-
-### Post
-```
-id, content, userId, jamId (opcional)
-images, likes, comments
-```
-
-### Notification
-```
-id, userId, type, data (JSON), read
-type: NEW_FOLLOWER | POST_LIKE | POST_COMMENT | JAM_STATUS_CHANGED | ...
-@@index([userId, read])
-```
+- **User:** username/email únicos, passwordHash, perfil (bio, avatarUrl, bannerUrl, *Url sociales), `isVerified`, `isBanned`, `isAdmin`.
+- **Jam:** slug único, status (enum), theme (oculto hasta IN_PROGRESS) + themeRevealed, teamMode (SOLO_ONLY|TEAMS_OPTIONAL|TEAMS_ONLY), maxParticipants, maxTeamSize, coverUrl, coverPosition, startAt/submissionsEndAt/votingEndAt.
+- **JamParticipation:** `@@unique([userId, jamId])`, teamId opcional.
+- **Team:** jamId, name, members, submission 1:1.
+- **Submission:** jamId, userId, teamId (`@unique`, una por equipo), title, description, fileUrl, fileSizeBytes, externalUrl, screenshots[].
+- **Vote:** jamId, submissionId, voterId, score 1-10, comment. **`@@unique([voterId, submissionId])`** (una calificación por entrega; índice en jamId).
+- **Post:** content, userId, jamId opcional, images[], likes[], comments[].
+- **PostComment:** content, userId, postId, **`parentId` opcional** (autorreferencia → respuestas 1 nivel, `onDelete: Cascade` borra respuestas).
+- **Notification:** userId, type (enum), data (JSON), read, `@@index([userId, read])`.
+  Tipos: NEW_FOLLOWER, POST_LIKE, POST_COMMENT, **COMMENT_REPLY**, JAM_STATUS_CHANGED, JAM_SUBMISSION_RECEIVED, JAM_VOTING_OPEN, JAM_RESULTS_PUBLISHED.
+- **Report, Block:** existen en schema, **no implementados** aún (futuro: banear, cola de reportes).
 
 ---
 
 ## File uploads
 
-| Recurso | Límite | Método |
-|---------|--------|--------|
-| Avatar | 5 MB | `uploadFile()` (buffered) |
-| Banner | 10 MB | `uploadFile()` (buffered) |
-| Cover de jam | 5 MB | `uploadFile()` (buffered) |
-| Imágenes de post | 10 MB c/u, máx 4 | `uploadFile()` (buffered) |
-| Screenshots | 10 MB c/u, máx 5 | `uploadFile()` (buffered) |
-| Archivo del juego | hasta 2 GB | `uploadStream()` (streaming directo a MinIO) |
+| Recurso | Límite | Método | Key en bucket |
+|---------|--------|--------|---------------|
+| Avatar | 5 MB | buffered | `avatars/...` |
+| Banner | 10 MB | buffered | `banners/...` |
+| Cover jam | 5 MB | buffered | `covers/{jamId}.ext` |
+| Imágenes post | 10 MB ×4 | buffered | `posts/{postId}/...` |
+| Screenshots | 10 MB ×5 | buffered | `submissions/{id}/screenshots/{ts}.ext` |
+| Archivo juego | 2 GB | **streaming** | `submissions/{id}/game.ext` |
+
+Bucket `jamhub` (lectura pública). URL guardada en DB = `{MINIO_PUBLIC_URL}/jamhub/{key}`.
 
 ---
 
-## Jobs BullMQ programados al publicar un jam
+## Detalles que muerden (gotchas)
 
-| Job | Cuándo se dispara | Acción |
-|-----|-------------------|--------|
-| `reveal-theme:jamId` | `startAt` | Estado → IN_PROGRESS, revela tema, notifica |
-| `open-submissions:jamId` | `submissionsEndAt` | Estado → SUBMISSIONS |
-| `open-voting:jamId` | `votingEndAt` | Estado → VOTING, notifica |
-| `close-jam:jamId` | fecha final de votación | Estado → CLOSED, notifica |
-
----
-
-## Paginación
-
-Todos los listados usan **cursor-based pagination** con `?cursor=<id>` y devuelven `{ data, nextCursor }`.
+1. **Job IDs BullMQ no pueden contener `:`** → usar `jamJobId()` que separa con `__`. (Bug histórico: scheduling fallaba silenciosamente y las jams no transicionaban.)
+2. **Response schemas recortan campos** (ver arriba).
+3. **`prisma migrate dev` necesita TTY** — en este entorno usar `prisma db push` (local) y generar migración aparte para prod.
+4. **seed-admin** está en `src/` (no `scripts/`) para que entre en `dist/` y corra con node puro en prod.
+5. Paginación cursor-based en todo: `?cursor=<id>` → `{ items, nextCursor }`.
 
 ---
 
-## Variables de entorno relevantes
+## Variables de entorno
 
 ```env
 DATABASE_URL
 REDIS_URL
-MINIO_ENDPOINT / MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
+MINIO_ENDPOINT / MINIO_PORT / MINIO_ACCESS_KEY / MINIO_SECRET_KEY / MINIO_PUBLIC_URL
 JWT_SECRET
-RESEND_API_KEY
-FRONTEND_URL        # usado para CORS
-NEXT_PUBLIC_API_URL # URL del backend que consume el frontend
+RESEND_API_KEY            # opcional
+FRONTEND_URL              # CORS
+NEXT_PUBLIC_API_URL       # build-arg del frontend (horneado en build, requiere rebuild al cambiar)
 NODE_ENV
+ADMIN_EMAIL / ADMIN_PASSWORD / ADMIN_USERNAME / ADMIN_DISPLAY_NAME   # para seed-admin
 ```

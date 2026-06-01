@@ -46,6 +46,8 @@ const ERROR_MAP: Record<string, { statusCode: number; message: string }> = {
   TEAM_FULL:              { statusCode: 400, message: 'Team has reached its size limit' },
   CANNOT_LEAVE_AFTER_SUBMISSION: { statusCode: 400, message: 'You cannot leave a jam after submitting' },
   SUBMISSION_NOT_FOUND:   { statusCode: 404, message: 'Submission not found' },
+  ALREADY_SUBMITTED:      { statusCode: 409, message: 'A submission already exists for you or your team' },
+  SCREENSHOT_NOT_FOUND:   { statusCode: 404, message: 'Screenshot not found' },
   JAM_NOT_IN_PROGRESS:    { statusCode: 400, message: 'Jam is not currently accepting submissions' },
   TEAM_REQUIRED:          { statusCode: 400, message: 'This jam requires you to be in a team before submitting' },
   TOO_MANY_SCREENSHOTS:   { statusCode: 400, message: 'Submission can have at most 5 screenshots' },
